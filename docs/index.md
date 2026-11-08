@@ -2,21 +2,23 @@
 layout: page
 title: "FastFlowLM"
 permalink: /
-description: "Ollama-style runtime that unlocks AMD Ryzen AI NPUs with instant installs, rich models, and matching docs."
+description: "NPU-native runtime that unlocks AMD Ryzen AI NPUs with instant installs, rich models, and matching docs."
 sections:
   - type: hero
     id: top
     kicker: "NPU-first runtime"
     title: "The fastest, most efficient LLM inference on NPUs"
     body: |
-      FastFlowLM (FLM) delivers an Ollama-style developer experience optimized for tile-structured NPU accelerators. Install in seconds, stream tokens instantly, and run context windows up to 256k — all with dramatically better efficiency than GPU-first stacks. Our GA release for AMD Ryzen™ AI NPUs is available today, with betas for Qualcomm Snapdragon and Intel Core Ultra coming soon.
+      FastFlowLM (FLM) delivers a familiar single-command developer experience built exclusively for AMD Ryzen™ AI NPUs. Install in seconds, stream tokens instantly, and run context windows up to 256k — all with dramatically better efficiency than GPU-first stacks.
+      
+      The FastFlowLM team is now part of AMD.
     ctas:
       - label: "Download FastFlowLM (Windows)"
-        href: "https://github.com/FastFlowLM/FastFlowLM/releases/latest/download/flm-setup.exe"
+        href: "https://github.com/ROCm/FastFlowLM/releases/latest/download/flm-setup.msi"
         style: primary
         external: true
       - label: "GitHub"
-        href: "https://github.com/FastFlowLM/FastFlowLM"
+        href: "https://github.com/ROCm/FastFlowLM"
         style: ghost
         external: true
       - label: "Models"
@@ -25,23 +27,20 @@ sections:
       - label: "Benchmarks"
         href: "/benchmarks/"
         style: ghost
-      - label: "Demos"
-        href: "/demos/"
-        style: ghost
-      - label: "Test Drive"
-        href: "/test-drive/"
-        style: ghost
+      # - label: "Demos"
+      #   href: "/demos/"
+      #   style: ghost
       - label: "Discord"
-        href: "https://discord.gg/z24t23HsHF?utm_source=site"
+        href: "https://discord.com/invite/jtWZdMJ8ee?utm_source=site"
         style: ghost
         external: true
     stats:
       - label: "Runtime size"
-        value: "~16 MB"
+        value: "~17 MB"
       - label: "Context"
         value: "Up to 256k tokens"
       - label: "Supported chips"
-        value: "Ryzen™ AI (Strix, Strix Halo, Kraken)"
+        value: "Ryzen™ AI (Strix, Strix Halo, Kraken, Gorgon Point)"
     right:
       carousel:
         slides:
@@ -54,16 +53,16 @@ sections:
               metrics:
                 - "Over 10× power efficiency"
                 - "256k ctx"
-                - "Vision · Audio · Text"
-          - title: "Ollama‑Style Developer Flow"
+                - "Vision · Audio · OMNI · Text"
+          - title: "Familiar Developer Flow"
             description: "Same simple CLI & API patterns you already know — deeply optimized for NPU performance."
             visual:
               type: "code"
               title: "PowerShell"
               content: |
-                flm run llama3.2:1b
+                flm run qwen3.5:4b
                 flm list
-                flm serve llama3.2:1b
+                flm serve qwen3.5:4b
           - title: "Unmatched Performance and Efficiency"
             description: "Ultra‑lightweight runtime with exceptional power efficiency and massive context windows."
             visual:
@@ -73,7 +72,7 @@ sections:
                   label: "Power Efficiency"
                 - value: "256k"
                   label: "Context Tokens"
-                - value: "~16MB"
+                - value: "~17 MB"
                   label: "Runtime Size"
           - title: "Multi‑Modal AI Support"
             description: "Run language models, vision models, audio processing, embeddings, and support Mixture‑of‑Experts (MoE) architectures."
@@ -89,6 +88,18 @@ sections:
 
   - type: media
     variant: alt
+    kicker: "Qwen3.6-MoE on NPU"
+    title: "Qwen3.6-35B-A3B streaming fully on the Ryzen™ AI NPU"
+    media:
+      src: "/assets/qwen3.6-demo.gif"
+      alt: "Qwen3.6-35B-A3B MoE model running locally on the Ryzen AI NPU"
+      href: "https://youtu.be/TT7WZOeqxQY?si=DUpdyw_xNBYfEZNz"
+      kicker: "Qwen3.6-MoE on NPU"
+      body: |
+        The fastest Qwen3.6-35B-A3B MoE implementation on any NPU—built for both Windows and Linux (Linux in this demo).
+
+  - type: media
+    variant: alt
     kicker: "GPT-OSS on NPU"
     title: "GPT-OSS-20B streaming fully on the Ryzen™ AI NPU"
     media:
@@ -97,12 +108,12 @@ sections:
       href: "https://youtu.be/sZt1WyNoL2U?si=7U3z6u6E9KF6G_Dd"
       kicker: "GPT-OSS on NPU"
       body: |
-        Runs GPT-OSS-20B at 19 TPS (token per second) with 10× GPU efficiency — the fastest MoE on any NPU.
+        Runs GPT-OSS-20B at 19 TPS (tokens per second) with 10× GPU efficiency — the fastest MoE on any NPU.
 
   - type: media
     variant: alt
     kicker: "Gemma3 (Vision) on NPU"
-    title: "Gemma3 (Vision) understand and describe the image"
+    title: "Gemma3 (Vision) understands and describes the image"
     media:
       src: "/assets/gemma3_4b.gif"
       alt: "Gemma3 vision model understanding an image"
@@ -141,7 +152,7 @@ sections:
       kicker: "Install"
       title: "From download to first token in under a minute"
       body: |
-        FastFlowLM ships as a 16 MB runtime with an Ollama-style CLI and a server compatible with the OpenAI API.
+        FastFlowLM ships as a 17 MB runtime with a familiar single-command CLI and a server compatible with the OpenAI API.
         No drivers, no guesswork—just run the installer, pull a model, and start chatting.
       items:
         - heading: "Zero-conf installer"
@@ -155,9 +166,9 @@ sections:
       code_blocks:
         - title: "CLI"
           content: |
-            Invoke-WebRequest https://github.com/FastFlowLM/FastFlowLM/releases/latest/download/flm-setup.exe `
-              -OutFile flm-setup.exe
-            Start-Process .\flm-setup.exe -Wait
+            Invoke-WebRequest https://github.com/ROCm/FastFlowLM/releases/latest/download/flm-setup.msi `
+              -OutFile flm-setup.msi
+            Start-Process .\flm-setup.msi -Wait
             flm pull llama3.2:3b
             flm run llama3.2:3b --ctx-len 131072
             
@@ -167,7 +178,7 @@ sections:
     title: "One runtime, every Ryzen-ready model"
     body: |
       Pull curated FastFlowLM recipes.
-      The runtime streams tokens via OpenAI-compatible API, so existing apps work without rewrites.
+      The runtime streams tokens via an OpenAI-compatible API, so existing apps work without rewrites.
     cards:
       - label: "Flagship reasoning"
         title: "GPT-OSS · DeepSeek-R1 · Qwen3"
@@ -221,6 +232,12 @@ sections:
 
   - type: two_column
     id: docs
+    left:
+      title: "Dive into the docs"
+      body: |
+        Everything you need to install FastFlowLM, pick a model, and start streaming on your Ryzen™ AI NPU.
+
+        For inquiries: [Discord](https://discord.com/invite/jtWZdMJ8ee?utm_source=site)
     right:
       ctas:
         - label: "Dive into docs"
@@ -228,20 +245,6 @@ sections:
           style: primary
         - label: "Installation guide"
           href: "/docs/install/"
-          style: ghost
-    left:
-      title: "Remote test drive"
-      body: |
-        No Ryzen™ AI hardware yet? Launch the hosted FastFlowLM + Open WebUI sandbox and stream from a live
-        AMD Ryzen™ AI box (Kraken Point).
-      items:
-        - heading: "Live hardware"
-          body: "Same builds we use internally, refreshed with every release."
-        - heading: "Guest access"
-          body: "Instant login with rotating demo credentials."
-      ctas:
-        - label: "Launch test drive"
-          href: "/test-drive/"
           style: ghost
 ---
 

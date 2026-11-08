@@ -12,19 +12,10 @@
 
 
 /************              Qwen2VL family            **************/
-Qwen2VL::Qwen2VL(xrt::device* npu_device_inst) : AutoModel(npu_device_inst, "Qwen2VL") {}
+Qwen2VL::Qwen2VL(flm_rt::device* npu_device_inst) : AutoModel(npu_device_inst, "Qwen2VL") {}
 
-void Qwen2VL::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption) {
-    this->_shared_load_model(model_path, model_info, default_context_length, enable_preemption);
-    
-    this->q4nx = std::make_unique<Q4NX>(this->model_path);
-    // lm_config->model_type == qwen2
-    this->lm_engine = std::make_unique<qwen2vl_npu>(*this->lm_config, this->npu.get(), this->MAX_L);
-
-    this->lm_engine->load_weights(*this->q4nx);
-    //free the q4nx
-    this->q4nx.reset();
-    this->lm_engine->clear_context();
+void Qwen2VL::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption, const std::string& backend) {
+    this->_shared_load_backend(model_path, model_info, default_context_length, enable_preemption, backend);
     this->setup_tokenizer(model_path);
     this->sampler.reset();
 
@@ -40,18 +31,18 @@ void Qwen2VL::load_model(std::string model_path, json model_info, int default_co
     for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
         this->profiler_list[i].reset();
     }
+    this->_prefix_attach(this->lm_engine, qwen2vl_npu_state_api(this->lm_engine), 151655);
 }
 
 void Qwen2VL::setup_tokenizer(std::string model_path) {
     auto tokenizer_config = this->_shared_setup_tokenizer(model_path);
 }
 
-std::string Qwen2VL::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools) {
+std::string Qwen2VL::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools, bool continue_final_message) {
     minja::chat_template_inputs inputs;
-    inputs.add_generation_prompt = true;
     inputs.messages = messages;
     inputs.extra_context = this->extra_context;
-    return this->chat_tmpl->apply(inputs);
+    return this->_render_chat_template(inputs, continue_final_message);
 }
 
 bool Qwen2VL::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
@@ -75,18 +66,25 @@ bool Qwen2VL::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
         // time_utils::time_point preprocess_start = time_utils::now();
         for(const auto& img_str : input.images){
             qwen2vl_image_t image = this->load_image(img_str);
+            if (image.width <= 0 || image.height <= 0) {
+                header_print_r("ERROR", "Skipping image that failed to load: " + img_str);
+                continue;
+            }
 
             preprocess_image(image, image_payload._data__processed);
-                       
+            if (image.grid_h <= 0 || image.grid_w <= 0) {
+                header_print_r("ERROR", "Skipping image that failed to preprocess: " + img_str);
+                continue;
+            }
+
             // Push the image AFTER preprocessing so grid_h and grid_w are set
             image_payload.images.push_back(image);
             image_payload.num_images++;
-        } 
+        }
     }
     try {
         if (!input.messages.empty()) { // already a formated messages, usually from REST API
             json qwenvl_message = json::array();
-            std::vector<const std::string*> pending_images;
             int total_images = 0;
             for (const auto& item : input.messages) {
                 if (!item.contains("images")) {
@@ -96,10 +94,32 @@ bool Qwen2VL::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
 
                 json newContent = json::array();
                 for (const auto& img : item["images"]) {
-                    if (img.is_string()) {
-                        pending_images.push_back(&img.get_ref<const std::string&>());
-                        total_images++;
+                    if (!img.is_string() || img.get_ref<const std::string&>().empty()) {
+                        continue;
                     }
+                    const std::string& img_str = img.get_ref<const std::string&>();
+
+                    // Decode/preprocess up front so an invalid image (e.g.
+                    // bad base64) never gets an image-soft-token placeholder
+                    // in the template below; otherwise image_payload.images
+                    // would fall out of sync with the placeholders and the
+                    // prompt would still try to prefill a nonexistent image.
+                    qwen2vl_image_t image = this->load_image_base64(img_str);
+                    if (image.width <= 0 || image.height <= 0) {
+                        header_print_r("ERROR", "Skipping invalid base64 image; prefilling language only for this item");
+                        continue;
+                    }
+
+                    preprocess_image(image, image_payload._data__processed);
+                    if (image.grid_h <= 0 || image.grid_w <= 0) {
+                        header_print_r("ERROR", "Skipping image that failed to preprocess");
+                        continue;
+                    }
+
+                    image_payload.images.push_back(image);
+                    image_payload.num_images++;
+                    total_images++;
+
                     newContent.push_back({
                         {"type", "image"}
                     });
@@ -116,58 +136,7 @@ bool Qwen2VL::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
 
                 qwenvl_message.push_back(newItem);
             }
-            templated_text = this->apply_chat_template(qwenvl_message);
-
-            for (const std::string* img_ptr : pending_images) {
-                if (img_ptr == nullptr || img_ptr->empty()) {
-                    continue;
-                }
-                const std::string_view img_preview =
-                    std::string_view(*img_ptr).substr(0, 8);
-                // header_print_g("DEBUG", "Loading image: " + std::string(img_preview) + "...");
-                qwen2vl_image_t image = this->load_image_base64(*img_ptr);
-                // header_print_g("DEBUG", "Preprocessing image...");
-                preprocess_image(image, image_payload._data__processed);
-                // header_print_g("DEBUG", "Image preprocessed: " +
-                    // std::to_string(image.width_resized) + "x" +
-                    // std::to_string(image.height_resized) +
-                    // ", grid: " + std::to_string(image.grid_w) + "x" +
-                    // std::to_string(image.grid_h));
-                // header_print_g("DEBUG", "Payload size: " + std::to_string(image_payload._data__processed.size()) );
-
-                image_payload.images.push_back(image);
-                image_payload.num_images++;
-            }
-
-            for (auto& message : qwenvl_message) {
-                auto content = message.value("content", nlohmann::ordered_json::array());
-                for (auto& item : content) {
-                    if (item.contains("type") && item["type"] == "image") {
-                        const std::string* img_ptr = nullptr;
-                        if (item.contains("image") && item["image"].is_string()) {
-                            img_ptr = &item["image"].get_ref<const std::string&>();
-                        }
-                        if (img_ptr == nullptr || img_ptr->empty()) {
-                            continue;
-                        }
-                        const std::string_view img_preview =
-                            std::string_view(*img_ptr).substr(0, 8);
-                        // header_print_g("DEBUG", "Loading image: " + std::string(img_preview) + "...");
-                        qwen2vl_image_t image = this->load_image_base64(*img_ptr);
-                        // header_print_g("DEBUG", "Preprocessing image...");
-                        preprocess_image(image, image_payload._data__processed);
-                        // header_print_g("DEBUG", "Image preprocessed: " +
-                            // std::to_string(image.width_resized) + "x" +
-                            // std::to_string(image.height_resized) +
-                            // ", grid: " + std::to_string(image.grid_w) + "x" +
-                            // std::to_string(image.grid_h));
-                        // header_print_g("DEBUG", "Payload size: " + std::to_string(image_payload._data__processed.size()) );
-
-                        image_payload.images.push_back(image);
-                        image_payload.num_images++;
-                    }
-                }
-            }
+            templated_text = this->apply_chat_template(qwenvl_message, nlohmann::ordered_json::object(), meta_info.continue_final_message);
             header_print_g("FLM", "Total images: " + std::to_string(total_images));
         }
         else if (!input.prompt.empty()) { // a pure text, usually from the cli
@@ -193,25 +162,32 @@ bool Qwen2VL::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
             messages.push_back(content);
             templated_text = this->apply_chat_template(messages);
         }
+    } catch (const ModelRequestError&) {
+        throw; // a final message that cannot be continued is the client's error (400), not a failed prefill
     } catch (const std::exception& e) {
         header_print_r("ERROR", std::string("Exception during chat template application: ") + e.what());
+        meta_info.error_message = std::string("Applying the chat template failed: ") + e.what();
         return false;
     }
     std::vector<int> tokens_init = this->tokenizer->encode(templated_text);
 
     // update the tokens to include the image tokens
     std::vector<int> tokens;
-    int total_image_tokens = 0;
+    size_t total_image_tokens = 0;
     // Use image_payload.images.size() (not input.images.size()), because on
     // the REST API path images come from `messages` and input.images is empty.
+    // Each image is one token per merged patch; the prompt-cache plan below reads the same counts.
+    std::vector<size_t> image_token_counts;
     for (size_t i = 0; i < image_payload.images.size(); i++) {
-        total_image_tokens += image_payload.images[i].grid_h * image_payload.images[i].grid_w;
+        image_token_counts.push_back(static_cast<size_t>(image_payload.images[i].grid_h * image_payload.images[i].grid_w) /
+                                     (QWEN2_MERGE_SIZE * QWEN2_MERGE_SIZE));
+        total_image_tokens += image_token_counts.back();
     }
     tokens.reserve(tokens_init.size() + total_image_tokens);
     int image_counter = 0;
     for (int i = 0; i < tokens_init.size(); i++) {
         if (tokens_init[i] == image_soft_token_id) {
-            for (int j = 0; j < image_payload.images[image_counter].grid_h * image_payload.images[image_counter].grid_w / 4; j++) {
+            for (size_t j = 0; j < image_token_counts[image_counter]; j++) {
                 tokens.push_back(image_soft_token_id);
             }
             image_counter++;
@@ -222,93 +198,67 @@ bool Qwen2VL::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
 
     this->profiler_list[TKOEN_ENCODE_TIME].stop(tokens.size());
 
-    // ----------------------------------------------------------------------
-    // Prompt-cache aware image alignment.
-    //
-    // AutoModel::_shared_insert prefix-matches `tokens` against `token_history`
-    // over the FULL length of `token_history`. If every token matches, it
-    // erases that prefix before prefilling; otherwise it calls clear_context()
-    // and skips nothing. We must NOT erase `tokens` here -- _shared_insert
-    // needs the untrimmed sequence to run that very check. What we DO need to
-    // fix up locally is the image payload (pixels for the WHOLE prompt,
-    // including already-cached images from earlier turns): drop the
-    // fully-cached leading images so the surviving payload aligns with the
-    // surviving image tokens after _shared_insert performs its own erase.
-    // ----------------------------------------------------------------------
-    size_t prefix_skip_count = 0;
-    {
-        const size_t idx = this->token_history.size();
-        for (size_t i = 0; i < idx; i++) {
-            if (i < tokens.size() && tokens[i] == this->token_history[i]) {
-                prefix_skip_count++;
-            } else {
-                break;
-            }
+    // ---- prefix slots: resume from the longest saved prefix of this prompt ----
+    // The generation prompt ("<|im_start|>assistant\n") is how the next turn renders this reply's header: the whole prompt
+    // is saved (trim 0). After a resume token_history is the slot's tokens, so the skip count below is the match length.
+    const bool slot_mode = this->_prefix_slot_mode(meta_info, tokens.size(), 0);
+    size_t match_len = 0;
+    std::vector<int> full_tokens;          // what this prompt leaves in the engine
+    std::vector<uint64_t> image_hashes;    // content of each of its images
+    if (slot_mode) {
+        full_tokens = tokens;
+        image_hashes = prefix_image_hashes(image_payload, QWEN2_PATCH_SIZE, QWEN2_TEMPORAL_PATCH_SIZE);
+        match_len = this->_prefix_resume(this->prefix_cache_, full_tokens, image_hashes);
+    } else {
+        this->_prefix_legacy_path(); // the in-place path below moves the engine on without telling the cache
+    }
+
+    // Pixels cover every image of the prompt, but the engine keeps the part of it it already holds (after the slot
+    // resume, or the live history): drop the images inside that part. _shared_insert asks the same plan, so it skips
+    // exactly the tokens these images sit in.
+    std::vector<prompt_media_t> media;
+    prompt_media_from_counts(tokens, image_soft_token_id, image_token_counts, prompt_media_t::kImage, media);
+    // Same-size pictures render the same tokens: the plan compares these content hashes (taken before the drop) so
+    // another picture is never matched to the rows of the old one. The slot path's hashes are the same values.
+    if (!media.empty()) {
+        if (image_hashes.empty()) {
+            image_hashes = prefix_image_hashes(image_payload, QWEN2_PATCH_SIZE, QWEN2_TEMPORAL_PATCH_SIZE);
         }
-        // Must match the entirety of token_history, otherwise _shared_insert
-        // will clear the context and not skip anything.
-        if (prefix_skip_count != idx) {
-            prefix_skip_count = 0;
+        for (size_t i = 0; i < media.size() && i < image_hashes.size(); i++) {
+            media[i].hash = image_hashes[i] != 0 ? image_hashes[i] : 1; // 0 means "not hashed"
         }
-
-        if (prefix_skip_count > 0 && !image_payload.images.empty()) {
-            // Count image-soft tokens in the cached prefix.
-            int skipped_image_tokens = 0;
-            for (size_t i = 0; i < prefix_skip_count; i++) {
-                if (tokens[i] == image_soft_token_id) skipped_image_tokens++;
-            }
-
-            // Walk through images and drop those whose entire token block
-            // sits within the cached prefix. (The chat-template prefix
-            // boundary always falls between messages, so an image's token
-            // block is never partially cached.)
-            size_t images_to_drop = 0;
-            size_t bf16_to_drop = 0;
-            int consumed_image_tokens = 0;
-            for (const auto& img : image_payload.images) {
-                const int img_tokens = (img.grid_h * img.grid_w) / 4;
-                const size_t img_bf16 =
-                    static_cast<size_t>(img.grid_h) * QWEN2_PATCH_SIZE *
-                    static_cast<size_t>(img.grid_w) * QWEN2_PATCH_SIZE *
-                    3u * QWEN2_TEMPORAL_PATCH_SIZE;
-                if (consumed_image_tokens + img_tokens <= skipped_image_tokens) {
-                    consumed_image_tokens += img_tokens;
-                    bf16_to_drop += img_bf16;
-                    images_to_drop++;
-                } else {
-                    break;
-                }
-            }
-
-            if (images_to_drop > 0) {
-                image_payload.images.erase(
-                    image_payload.images.begin(),
-                    image_payload.images.begin() + images_to_drop);
-                image_payload.num_images -= static_cast<int>(images_to_drop);
-                if (bf16_to_drop >= image_payload._data__processed.size()) {
-                    image_payload._data__processed.clear();
-                } else {
-                    image_payload._data__processed.erase(
-                        image_payload._data__processed.begin(),
-                        image_payload._data__processed.begin() + bf16_to_drop);
-                }
-                header_print_g("FLM",
-                    "Prompt-cache hit: dropped " + std::to_string(images_to_drop)
-                    + " cached image(s) from payload");
-            }
+    }
+    const prompt_reuse_t plan = this->_plan_reuse(tokens, media);
+    const size_t images_to_drop = std::min(plan.skipped_media[prompt_media_t::kImage], image_payload.images.size());
+    if (images_to_drop > 0) {
+        size_t bf16_to_drop = 0;
+        for (size_t i = 0; i < images_to_drop; i++) {
+            const auto& img = image_payload.images[i];
+            bf16_to_drop += static_cast<size_t>(img.grid_h) * QWEN2_PATCH_SIZE *
+                            static_cast<size_t>(img.grid_w) * QWEN2_PATCH_SIZE *
+                            3u * QWEN2_TEMPORAL_PATCH_SIZE;
+        }
+        image_payload.images.erase(
+            image_payload.images.begin(),
+            image_payload.images.begin() + images_to_drop);
+        image_payload.num_images -= static_cast<int>(images_to_drop);
+        if (bf16_to_drop >= image_payload._data__processed.size()) {
+            image_payload._data__processed.clear();
+        } else {
+            image_payload._data__processed.erase(
+                image_payload._data__processed.begin(),
+                image_payload._data__processed.begin() + bf16_to_drop);
         }
     }
 
-    // find the last image token index, expressed relative to the tokens that
-    // will SURVIVE _shared_insert's prefix erase (i.e. shifted by -prefix_skip_count).
-    int last_image_token_index = -1;
-    for (int i = static_cast<int>(prefix_skip_count); i < (int)tokens.size(); i++) {
-        if (tokens[i] == image_soft_token_id) {
-            last_image_token_index = i - static_cast<int>(prefix_skip_count);
-        }
-    }
-    last_image_token_index++; // plus the end of image tokens
+    // one past the last image token, relative to the tokens that survive _shared_insert's skip:
+    // every remaining image goes into the first prefill chunk
+    const int last_image_token_index = static_cast<int>(plan.media_end);
     // hardware
+    if (slot_mode) {
+        return this->_prefix_insert(this->prefix_cache_, meta_info, tokens, full_tokens, image_hashes, match_len, "<|im_start|>user",
+                                    image_payload.num_images > 0 ? static_cast<void*>(&image_payload) : nullptr, last_image_token_index, is_cancelled);
+    }
     if (image_payload.num_images > 0){
         return this->_shared_insert(meta_info, tokens, is_cancelled, &image_payload, last_image_token_index);
     }else{

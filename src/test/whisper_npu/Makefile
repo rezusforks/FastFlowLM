@@ -21,6 +21,9 @@ SOURCES += ../../common/AutoModel/automodel.cpp
 SOURCES += ../../common/modules/sampler.cpp
 SOURCES += ../../common/tokenizer/tokenizer.cpp
 SOURCES += ../../common/whisper/modeling_whisper_audio.cpp
+SOURCES += ../../common/audio/audio_reader.cpp
+SOURCES += ../../common/audio/audio_decoder.cpp
+SOURCES += ../../common/audio/audio_resampler.cpp
 SOURCES += ../../common/whisper/modeling_whisper.cpp
 
 HEADERS += ../../include/llama/whisper_npu.hpp
@@ -35,18 +38,23 @@ ifeq ($(WSL), 0)
 # Use g++-13 directly without CMake
 
 LDFLAGS += -lwhisper_npu
-LDFLAGS += -lfftw3 -lfftw3f -lfftw3l
-LDFLAGS += -lavformat -lavcodec -lavutil -lswscale -lswresample
+LDFLAGS += -lvorbisfile -lvorbis -logg -lopus
 
 
-TEST_DEPS := $(test.cpp:.cpp=.d)
+CPP_SOURCES := $(filter %.cpp,$(SOURCES))
+OBJECTS := $(addprefix $(BUILD_DIR)/,$(notdir $(CPP_SOURCES:.cpp=.o)))
+DEPS := $(OBJECTS:.o=.d)
+VPATH := $(sort $(dir $(CPP_SOURCES)))
 
-all: directories $(BUILD_DIR)/test_whisper_npu
+all: $(BUILD_DIR)/test_whisper_npu
 
-directories:
+$(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/test_whisper_npu: $(SOURCES) $(TEST_DEPS)
+$(BUILD_DIR)/%.o: %.cpp | $(BUILD_DIR)
+	$(CXX) $(CXX_FLAGS) -c $< -o $@
+
+$(BUILD_DIR)/test_whisper_npu: $(OBJECTS)
 	$(CXX) $(CXX_FLAGS) -o $@ $^ $(LDFLAGS) $(DEPENDENCY_LDFLAGS)
 
 clean:
@@ -56,8 +64,8 @@ test: $(BUILD_DIR)/test_whisper_npu
 	cp ../../model_list.json $(BUILD_DIR)/model_list.json
 	cd $(BUILD_DIR) && export LD_LIBRARY_PATH=../../../lib:$(LD_LIBRARY_PATH) && ./test_whisper_npu -m whisper-v3 -p 0 -a test1.ogg -t 1 -r 0
 
--include $(TEST_DEPS)
-.PHONY: all clean test directories
+-include $(DEPS)
+.PHONY: all clean test
 
 else
 

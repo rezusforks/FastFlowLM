@@ -53,6 +53,19 @@ Sampler::Sampler(int in_features, sampler_config& config) {
 
 void Sampler::set_seed(uint64_t seed) {
     rng_.seed(seed);
+    uniform_dist_.reset();
+}
+
+void Sampler::set_repeat_last_n(size_t n) {
+    this->repeat_last_n = n;
+    while (this->token_history.size() > n) {
+        int oldest = this->token_history.front();
+        this->token_history.pop_front();
+        this->counters[oldest]--;
+        if (--this->token_counts_sparse[oldest] <= 0) {
+            this->token_counts_sparse.erase(oldest);
+        }
+    }
 }
 
 /// \brief Reset the penalties
@@ -215,28 +228,38 @@ void Sampler::sampler_penalty_apply_sparse() {
 }
 
 void Sampler::sampler_topk_apply(int k) {
-    if (k == 0) {
+    k = std::min(k, in_features);
+    if (k <= 0) {
         return;
     }
 
-    logits_list_t pairs;
-    pairs.resize(in_features);
-    for (int i = 0; i < in_features; i++) {
-        pairs[i].logits = this->logits[i];
-        pairs[i].token_id = i;
-        pairs[i].prob = 0.0f;
+    // bf16 logits tie exactly often enough to matter over a 100k+ vocab, so a
+    // bare `>` would leave the winner of a tie to the selection's internals.
+    // Lowest id wins instead: the order is reproducible and matches
+    // sample_greedy()'s argmax.
+    const auto ranks_before = [](const logits_t& a, const logits_t& b) {
+        if (a.logits != b.logits) { return a.logits > b.logits; }
+        return a.token_id < b.token_id;
+    };
+
+    // One pass with a k-entry heap whose front is the worst survivor, instead of
+    // materialising and partially sorting a vocab-sized array every token.
+    auto& top = this->top_k_logits;
+    top.clear();
+    top.reserve(k);
+    for (int i = 0; i < k; i++) {
+        top.push_back(logits_t{ this->logits[i], i, 0.0f });
     }
-
-    std::partial_sort(
-        pairs.begin(),
-        pairs.begin() + k,
-        pairs.end(),
-        [](const logits_t& a, const logits_t& b) {
-            return a.logits > b.logits;
+    std::make_heap(top.begin(), top.end(), ranks_before);
+    for (int i = k; i < in_features; i++) {
+        // ids only grow, so a logit equal to the worst survivor's never displaces it
+        if (this->logits[i] > top.front().logits) {
+            std::pop_heap(top.begin(), top.end(), ranks_before);
+            top.back() = logits_t{ this->logits[i], i, 0.0f };
+            std::push_heap(top.begin(), top.end(), ranks_before);
         }
-    );
-
-    this->top_k_logits.assign(pairs.begin(), pairs.begin() + k);
+    }
+    std::sort_heap(top.begin(), top.end(), ranks_before);
 }
 
 void Sampler::sampler_topp_apply(float p) {
@@ -347,8 +370,174 @@ void Sampler::ring_buffer_update_sparse(int sampled_index) {
 /// \brief Sample the token
 /// \param x the input buffer
 /// \return the sampled token
-int Sampler::sample(buffer<bf16>& x) {
+int Sampler::sample_greedy(buffer<bf16>& x, const std::vector<uint32_t>* allowed, sample_logprobs_t* logprobs) {
+    const bool penalties_active =
+        (this->repeat_last_n != 0) &&
+        (this->rep_penalty != 1.0f || this->freq_penalty != 0.0f || this->pre_penalty != 0.0f);
+
+    float best = -std::numeric_limits<float>::infinity();
+    int best_id = 0;
+
+    if (penalties_active || allowed != nullptr || logprobs != nullptr) {
+        // penalties reorder the logits, so they have to land before the argmax.
+        // that needs the fp32 copy, but nothing past it does. A mask needs the
+        // copy too: x is the engine's buffer and is never written. So do
+        // logprobs, which read the whole vocabulary a second time.
+        #if USEAVX2
+        const int simd_width = 8;
+        int i = 0;
+        for (; i <= in_features - simd_width; i += simd_width) {
+            __m128i bf16_vals_x = _mm_loadu_si128((__m128i*)&x[i]);
+            __m256 fp32_vals_x = bf16o_fp32(bf16_vals_x);
+            _mm256_storeu_ps(&this->logits[i], fp32_vals_x);
+        }
+        for (; i < in_features; i++) {
+            this->logits[i] = x[i];
+        }
+        #else
+        for (int i = 0; i < in_features; i++) {
+            this->logits[i] = x[i];
+        }
+        #endif
+        if (logprobs != nullptr) {
+            raw_logprobs_apply(*logprobs);
+        }
+        if (penalties_active) {
+            sampler_penalty_apply_sparse();
+        }
+        sampler_allowed_apply(allowed);
+        for (int i = 0; i < in_features; i++) {
+            if (this->logits[i] > best) {
+                best = this->logits[i];
+                best_id = i;
+            }
+        }
+    }
+    else {
+        // Nothing rewrites the logits, so scan them where they lie: no
+        // vocab-sized fp32 buffer is written at all. The logits come back in
+        // device-mapped memory where element-at-a-time reads are punishing, so
+        // the scan pulls 8 at a time and keeps the running argmax in lanes.
+        #if USEAVX2
+        const int simd_width = 8;
+        int i = 0;
+        __m256 vmax = _mm256_set1_ps(-std::numeric_limits<float>::infinity());
+        __m256i vidx = _mm256_set1_epi32(0);
+        __m256i vcur = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+        const __m256i vstep = _mm256_set1_epi32(simd_width);
+        for (; i <= in_features - simd_width; i += simd_width) {
+            __m256 v = bf16o_fp32(_mm_loadu_si128((__m128i*)&x[i]));
+            __m256 gt = _mm256_cmp_ps(v, vmax, _CMP_GT_OQ);
+            vmax = _mm256_blendv_ps(vmax, v, gt);
+            vidx = _mm256_castps_si256(_mm256_blendv_ps(_mm256_castsi256_ps(vidx),
+                                                        _mm256_castsi256_ps(vcur), gt));
+            vcur = _mm256_add_epi32(vcur, vstep);
+        }
+        alignas(32) float lane_max[simd_width];
+        alignas(32) int lane_idx[simd_width];
+        _mm256_store_ps(lane_max, vmax);
+        _mm256_store_si256((__m256i*)lane_idx, vidx);
+        for (int j = 0; j < simd_width; j++) {
+            // strictly greater keeps the lowest index on a tie, in both loops
+            if (lane_max[j] > best) {
+                best = lane_max[j];
+                best_id = lane_idx[j];
+            }
+        }
+        for (; i < in_features; i++) {
+            float v = x[i];
+            if (v > best) {
+                best = v;
+                best_id = i;
+            }
+        }
+        #else
+        for (int i = 0; i < in_features; i++) {
+            float v = x[i];
+            if (v > best) {
+                best = v;
+                best_id = i;
+            }
+        }
+        #endif
+    }
+
+    // callers that inspect the surviving candidates still get a consistent view
+    this->top_k_logits.assign(1, logits_t{ best, best_id, 1.0f });
+    ring_buffer_update_sparse(best_id);
+    return best_id;
+}
+
+void Sampler::sampler_allowed_apply(const std::vector<uint32_t>* allowed) {
+    if (allowed == nullptr) {
+        return;
+    }
+    const float banned = -std::numeric_limits<float>::infinity();
+    const size_t words = allowed->size();
+    for (int word = 0; word * 32 < in_features; word++) {
+        const uint32_t bits = static_cast<size_t>(word) < words ? (*allowed)[word] : 0u;
+        if (bits == 0xFFFFFFFFu) {
+            continue;
+        }
+        const int end = std::min(in_features, (word + 1) * 32);
+        for (int i = word * 32; i < end; i++) {
+            if (!((bits >> (i % 32)) & 1u)) {
+                this->logits[i] = banned;
+            }
+        }
+    }
+}
+
+void Sampler::raw_logprobs_apply(sample_logprobs_t& logprobs) {
+    raw_logprobs(this->logits.data(), in_features, logprobs);
+}
+
+void raw_logprobs(const float* logits, int n, sample_logprobs_t& logprobs) {
+    float max_l = -std::numeric_limits<float>::infinity();
+    for (int i = 0; i < n; i++) {
+        max_l = std::max(max_l, logits[i]);
+    }
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        sum += std::exp(logits[i] - max_l);
+    }
+    logprobs.log_norm = max_l + static_cast<float>(std::log(sum));
+
+    // Same order as sampler_topk_apply(): higher logit first, lowest id on a tie
+    const auto ranks_before = [](const token_logprob_t& a, const token_logprob_t& b) {
+        if (a.logprob != b.logprob) { return a.logprob > b.logprob; }
+        return a.token_id < b.token_id;
+    };
+    const int k = std::min(logprobs.top_n, n);
+    auto& top = logprobs.top;
+    top.clear();
+    if (k <= 0) {
+        return;
+    }
+    // Holds logits until the end, logprobs only once the heap is sorted
+    top.reserve(k);
+    for (int i = 0; i < k; i++) {
+        top.push_back(token_logprob_t{ i, logits[i] });
+    }
+    std::make_heap(top.begin(), top.end(), ranks_before);
+    for (int i = k; i < n; i++) {
+        if (logits[i] > top.front().logprob) {
+            std::pop_heap(top.begin(), top.end(), ranks_before);
+            top.back() = token_logprob_t{ i, logits[i] };
+            std::push_heap(top.begin(), top.end(), ranks_before);
+        }
+    }
+    std::sort_heap(top.begin(), top.end(), ranks_before);
+    for (auto& t : top) {
+        t.logprob -= logprobs.log_norm;
+    }
+}
+
+int Sampler::sample(buffer<bf16>& x, const std::vector<uint32_t>* allowed, sample_logprobs_t* logprobs) {
     // PRNG is seeded once at construction, no per-call seeding needed
+    if (this->top_k == 1) {
+        return sample_greedy(x, allowed, logprobs);
+    }
 
     // COPY FROM `x` → `this->logits[]`
     #if USEAVX2
@@ -370,7 +559,11 @@ int Sampler::sample(buffer<bf16>& x) {
     }
     #endif
 
+    if (logprobs != nullptr) {
+        raw_logprobs_apply(*logprobs);
+    }
     sampler_penalty_apply_sparse();
+    sampler_allowed_apply(allowed);
     sampler_topk_apply(this->top_k);
     if (this->use_optimized_sampling) {
         softmax_with_topp_minp(this->top_p, this->min_p);

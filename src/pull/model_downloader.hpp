@@ -14,9 +14,24 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <string_view>
+
+struct ModelFileSource {
+    std::string url;
+    std::string revision;
+    bool use_hf_token = false;
+};
+
+ModelFileSource resolve_file_source(
+    const nlohmann::json& model_info,
+    std::string_view filename,
+    bool use_modelscope);
 
 class ModelDownloader {
 public:
+
+    enum class ModelStatus { Ready, Missing, Outdated,  Incompatible};
+
     ModelDownloader(model_list& models);
     
     // Check if model is already downloaded.
@@ -24,10 +39,10 @@ public:
     // are checked; no HuggingFace metadata is fetched and no per-file hash
     // verification / cleanup is performed. Use this for cheap status queries
     // such as `flm list`.
-    bool is_model_downloaded(const std::string& model_tag, bool sub_process_mode=0, bool fast_check=false);
+    ModelStatus is_model_downloaded(const std::string& model_tag, bool sub_process_mode=0, bool fast_check=false);
     
     // Download model files if not present
-    bool pull_model(const std::string& model_tag, bool force_redownload = false);
+    bool pull_model(const std::string& model_tag, bool use_modelscope = false, bool force_redownload = false);
     
     // Get list of missing files for a model
     std::vector<std::string> get_missing_files(const std::string& model_tag);
@@ -38,17 +53,29 @@ public:
     // Remove a model and all its files
     bool remove_model(const std::string& model_tag, bool sub_process_mode=0);
     
-    bool check_model(const std::string& model_tag, bool sub_process_mode=0);
+    bool check_model(const std::string& model_tag, bool use_modelscope=0, bool sub_process_mode=0);
 
     // Get download progress callback
     std::function<void(size_t, size_t)> get_progress_callback();
 
     void model_not_found(const std::string& model_tag);
 
+    // Tags that name this tag as their base_model and have files on disk
+    std::vector<std::string> installed_dependants(const std::string& model_tag);
+
 private:
     model_list& supported_models;
     download_utils::CurlInitializer curl_init;
     
+    // Readiness of the tag's own folder only (no base_model look-through)
+    ModelStatus own_model_status(const std::string& model_tag, bool sub_process_mode, bool fast_check);
+
+    // pull_model for the tag's own folder only (the base is pulled first by pull_model)
+    bool pull_own_model(const std::string& model_tag, bool use_modelscope, bool force_redownload);
+
+    // check_model for the tag's own folder only
+    bool check_own_model(const std::string& model_tag, bool use_modelscope, bool sub_process_mode);
+
     // Check if a specific file exists
     bool file_exists(const std::string& file_path);
     
@@ -56,12 +83,16 @@ private:
     std::string get_model_file_path(const std::string& model_path, const std::string& filename);
     
     // Build download URLs for model files
-    std::pair<nlohmann::json, float> build_download_list(const std::string& model_tag);
+    std::pair<nlohmann::json, float> build_download_list(
+        const std::string& model_tag, bool modelscope=0, bool force_redownload=false);
+
+    // Settle which source a pull of an entry with a preferred one uses
+    void choose_pull_source(const std::string& model_tag, bool use_modelscope, bool force_redownload);
 
     // bool check_model_compatibility(const std::string& model_tag);
-    bool check_model_compatibility(const std::string& model_tag, bool sub_process_mode=0);
+    ModelStatus check_model_compatibility(const std::string& model_tag, bool sub_process_mode=0);
 
     // Verify per-file integrity against HuggingFace metadata and remove any
     // corrupted files. Returns true if all files passed verification.
-    bool verify_and_clean_files(const std::string& model_tag, bool sub_process_mode=0);
-}; 
+    bool verify_and_clean_files(const std::string& model_tag, bool use_modelscope=0, bool sub_process_mode=0);
+}; 

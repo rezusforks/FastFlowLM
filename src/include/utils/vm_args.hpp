@@ -35,19 +35,27 @@ inline void print_help(po::options_description& general) {
     std::cout << general << std::endl;
     std::cout << "Examples:" << std::endl;
     std::cout << "\tflm run llama3.2:1b" << std::endl;
-    std::cout << "\tflm run llama3.2:1b --asr 1" << std::endl;
+    std::cout << "\tflm run llama3.2:1b --asr whisper-v3:turbo" << std::endl;
+    std::cout << "\tflm run llama3.2:1b --modelscope 1" << std::endl;
     std::cout << "\tflm serve llama3.2:1b --pmode balanced" << std::endl;
     std::cout << "\tflm pull llama3.2:1b --force" << std::endl;
+    std::cout << "\tflm pull llama3.2:1b --modelscope 1" << std::endl;
     std::cout << "\tflm check llama3.2:1b" << std::endl;
     std::cout << "\tflm serve llama3.2:1b --ctx-len 8192" << std::endl;
+    std::cout << "\tflm run phi4-mini-it:4b --backend flm_npu" << std::endl;
     std::cout << "\tflm serve llama3.2:1b --prefill-chunk-len 8192" << std::endl;
+    std::cout << "\tflm serve qwen3.5:2b --prefix-slots 16 --prefix-cache-mb 4096" << std::endl;
+    std::cout << "\tflm serve qwen3.5:2b --prefix-min-gain 256" << std::endl;
     std::cout << "\tflm serve llama3.2:1b --socket 10" << std::endl;
     std::cout << "\tflm serve llama3.2:1b --q-len 10" << std::endl;
     std::cout << "\tflm serve llama3.2:1b --port 8000" << std::endl;
     std::cout << "\tflm serve llama3.2:1b --cors 0" << std::endl;
-    std::cout << "\tflm serve llama3.2:1b --asr 1" << std::endl;
-    std::cout << "\tflm serve llama3.2:1b --embed 1" << std::endl;
-    std::cout << "\tflm serve qwen3vl-it:4b --resize 1 (0: original size, 1: height = 480, 2: height = 720, 3: height = 1080)" << std::endl;
+    std::cout << "\tflm serve llama3.2:1b --asr whisper-v3:turbo" << std::endl;
+    std::cout << "\tflm serve llama3.2:1b --embed embed-gemma:300m" << std::endl;
+    std::cout << "\tflm serve -a whisper-v3:turbo" << std::endl;
+    std::cout << "\tflm serve -e embed-gemma:300m" << std::endl;
+    std::cout << "\tflm serve llama3.2:1b --modelscope 1" << std::endl;
+    std::cout << "\tflm serve qwen3vl-it:4b --img-pre-resize 1" << std::endl;
     std::cout << "\tflm list" << std::endl;
     std::cout << "\tflm list --quiet" << std::endl;
     std::cout << "\tflm list --filter installed" << std::endl;
@@ -61,6 +69,7 @@ inline void print_help(po::options_description& general) {
 /// \param parsed_args reference to store parsed arguments
 /// \return true if parsing was successful, false otherwise
 bool parse_options(int argc, char *argv[], program_args_t& parsed_args) {
+    std::string asr_arg, embed_arg;
     try {
         // Define the command line options
         po::options_description general("Allowed options");
@@ -69,16 +78,20 @@ bool parse_options(int argc, char *argv[], program_args_t& parsed_args) {
             ("version,v", "Show version information")
             ("pmode", po::value<std::string>(&parsed_args.power_mode)->default_value("performance"),
              "Set power mode: powersaver, balanced, performance, turbo")
-            ("asr,a", po::value<bool>(&parsed_args.asr)->default_value(0),
-             "If load asr model")
-            ("embed,e", po::value<bool>(&parsed_args.embed)->default_value(0),
-            "If load embed model")
+            ("asr,a", po::value<std::string>(&asr_arg)->default_value("0"),
+             "ASR model to load: a model tag (e.g. whisper-v3:turbo), 1 = the default ASR model, 0 = none")
+            ("embed,e", po::value<std::string>(&embed_arg)->default_value("0"),
+            "Embedding model to load: a model tag (e.g. embed-gemma:300m), 1 = the default embedding model, 0 = none")
+            ("decision,d", po::value<std::string>(&parsed_args.decision)->default_value(""),
+             "Serve a decision model next to the chat model, d3:edge, d3:lite, d3:nano, d3:mini, d3:flash, d3:turbo or d3:ultra (POST /v1/systemone)")
             ("host", po::value<std::string>(&parsed_args.host)->default_value("127.0.0.1"), 
              "Set the server address (for serve command)")
             ("port,p", po::value<int>(&parsed_args.port)->default_value(-1), 
              "Set the server port number (for serve command)")
             ("force", po::bool_switch(&parsed_args.force_redownload),
              "Force re-download even if model exists (for pull command)")
+            ("modelscope", po::value<bool>(&parsed_args.modelscope)->default_value(false)->implicit_value(true),
+             "Download models hosted on ModelScope")
             ("filter", po::value<std::string>(&parsed_args.list_filter)->default_value("all"),
              "Show models: all | installed | not-installed")
             ("quiet", po::bool_switch(&parsed_args.sub_process_mode),
@@ -87,10 +100,19 @@ bool parse_options(int argc, char *argv[], program_args_t& parsed_args) {
              "Output in JSON format (for list, validate, version commands)")
             ("ctx-len,c", po::value<int>(&parsed_args.ctx_length)->default_value(-1),
              "Set context length")
+            ("backend", po::value<std::string>(&parsed_args.backend)->default_value(""),
+             "Execution backend to run the model on (default: the model's own). Overrides FLM_BACKEND")
             ("prefill-chunk-len,pcl", po::value<int>(&parsed_args.prefill_chunk_len)->default_value(-1),
              "Set prefill chunk length")
+            ("prefix-cache-mb", po::value<int>(&parsed_args.prefix_cache_mb)->default_value(-1),
+             "Host memory in MiB for saved prompt snapshots (prefix cache), -1: default 4096 (Qwen3.5 and Qwen3.6-MoE)")
+            ("prefix-slots", po::value<int>(&parsed_args.prefix_slots)->default_value(-1),
+             "How many prompt snapshots to keep (prefix cache), -1: default 8, at most 32, 0: off (Qwen3.5 and Qwen3.6-MoE)")
+            ("prefix-min-gain", po::value<int>(&parsed_args.prefix_min_gain)->default_value(-1),
+             "Prefix cache: a new end-of-prompt snapshot is only saved if it adds at least this many tokens over a saved one that already covers the prompt, "
+             "-1: default 128, 0: save every one. Larger = fewer saves and evictions but up to N more tokens re-read on a resume; smaller = the opposite")
             ("img-pre-resize,r", po::value<int>(&parsed_args.img_pre_resize)->default_value(2),
-             "Pre-resize the image, 0: original size, 1: height = 480, 2: height = 720, 3: height = 1080, 4: height = 1440")
+             "Pre-resize the image, 0: original size, 1: height = 480, 2: height = 720, 3: height = 1080, 4: height = 1440, 5: height = 2160, 6: height = 2880, 7: height = 3240, 8: height = 4320")
             ("socket,s", po::value<size_t>(&parsed_args.max_socket_connections)->default_value(10),
             "Set the maximum number of socket connections allowed (for serve command)")
             ("q-len,q", po::value<size_t>(&parsed_args.max_npu_queue)->default_value(10),
@@ -100,7 +122,9 @@ bool parse_options(int argc, char *argv[], program_args_t& parsed_args) {
             ("preemption", po::value<bool>(&parsed_args.preemption)->default_value(false),
              "Enable preemption")
             ("prompt,i", po::value<std::string>(&parsed_args.input_file_name)->default_value(""),
-             "Direct file input");
+             "Direct file input")
+            ("bench-iterations", po::value<int>(&parsed_args.iterations)->default_value(2),
+             "Iterations for bench");
 
         // Define positional arguments
         po::positional_options_description pos_desc;
@@ -125,17 +149,30 @@ bool parse_options(int argc, char *argv[], program_args_t& parsed_args) {
                   .run(), vm);
         po::notify(vm);
 
+        // -a / -e take a model tag, or the legacy 0 / 1 (off / the default model)
+        auto resolve_model_arg = [](const std::string& arg, bool& enabled, std::string& tag) {
+            if (arg.empty() || arg == "0" || arg == "false") {
+                enabled = false;
+            } else {
+                enabled = true;
+                if (arg != "1" && arg != "true") {
+                    tag = arg;
+                }
+            }
+        };
+        resolve_model_arg(asr_arg, parsed_args.asr, parsed_args.asr_tag);
+        resolve_model_arg(embed_arg, parsed_args.embed, parsed_args.embed_tag);
+
         // Help has highest priority
         if (vm.count("help")) {
-            // Custom help formatting to match the desired style
             print_help(general);
-            return false; // Exit after showing help
+            parsed_args.command = "help";
+            return true;
         }
 
         if (vm.count("version")) {
-            // Custom help formatting to match the desired style
-            std::cout << "FLM v" << __FLM_VERSION__ << std::endl;
-            return false; // Exit after showing help
+            parsed_args.command = "version";
+            return true;
         }
 
         // Extract command
@@ -145,7 +182,7 @@ bool parse_options(int argc, char *argv[], program_args_t& parsed_args) {
             // Handle help and version commands directly
             if (parsed_args.command == "help") {
                 print_help(general);
-                return false; // Exit after showing help
+                return true;
             }
             
             if (parsed_args.command == "version") {
@@ -197,6 +234,10 @@ bool parse_options(int argc, char *argv[], program_args_t& parsed_args) {
             parsed_args.model_tag = vm["model_tag"].as<std::string>();
         }
 
+
+        // if (vm.count("modelscope")) {
+        //     parsed_args.modelscope = vm["modelscope"].as<bool>();
+        // }
 
         // Note: serve command allows empty model_tag (will use default)
 

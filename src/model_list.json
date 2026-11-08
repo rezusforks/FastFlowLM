@@ -1,11 +1,82 @@
 {
     "model_path": "models",
     "models": {
+        "hy-mt2-flash": {
+            "1.8b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Hy-MT2-1.8B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Hy-MT2-1.8B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Hy-MT2-1.8B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Hy-MT2-1.8B-NPU2",
+                "modified_at": "2026-09-01T00:00:00Z",
+                "size": 1800000000,
+                "flm_min_version": "1.0.5",
+                "default_context_length": 1024,
+                "max_prefill_len": 1024,
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja"
+                ],
+                "vlm": false,
+                "asr": false,
+                "details": {
+                    "format": "NPU2",
+                    "family": "hunyuan",
+                    "think": false,
+                    "parameter_size": "1.8B",
+                    "quantization_level": "Q4_0"
+                },
+                "label": [
+                    "translation",
+                    "single-turn"
+                ],
+                "footprint": 1.4
+            }
+        },
+        "hy-memory": {
+            "30b-a3b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Hy-Memory-30B-A3B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Hy-Memory-30B-A3B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Hy-Memory-30B-A3B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Hy-Memory-30B-A3B-NPU2",
+                "modified_at": "2026-10-26T00:00:00Z",
+                "size": 17870824616,
+                "flm_min_version": "1.0.13",
+                "default_context_length": 16384,
+                "max_prefill_len": 16384,
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja"
+                ],
+                "vlm": false,
+                "asr": false,
+                "details": {
+                    "format": "NPU2",
+                    "family": "hy-memory",
+                    "think": false,
+                    "parameter_size": "30B-A3B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "memory"
+                ],
+                "footprint": 22.0
+            }
+        },
         "nanbeige4.1": {
             "3b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Nanbeige4.1-3B-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/Nanbeige4.1-3B-NPU2",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/Nanbeige4.1-3B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Nanbeige4.1-3B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 1000000000,
                 "flm_min_version": "0.9.38",
@@ -19,21 +90,23 @@
                 ],
                 "details": {
                     "family": "nanbeige",
-                    "think": false,
+                    "think": true,
                     "parameter_size": "3B",
                     "quantization_level": "Q4_1"
                 },
                 "label":[
                     "reasoning"
                 ],
-                "footprint": 3.1
+                "footprint": 2.9
             }
         },
         "qwen3vl-it": {
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen3-VL-4B-Instruct-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3-VL-4B-Instruct-NPU2/resolve/v0.9.22-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-VL-4B-Instruct-NPU2/tree/v0.9.22-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3-VL-4B-Instruct-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-VL-4B-Instruct-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3-VL-4B-Instruct-NPU2",
                 "size": 4000000000,
                 "flm_min_version": "0.9.22",
                 "files": [
@@ -60,11 +133,46 @@
                 "footprint": 3.9
             }
         },
+        "qwen3vl-flash": {
+            "4b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3-VL-4B-Instruct-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3-VL-4B-Instruct-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-VL-4B-Instruct-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3-VL-4B-Instruct-NPU2",
+                "size": 4000000000,
+                "flm_min_version": "0.9.22",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_weight.q4nx"
+                ],
+                "vlm": true,
+                "default_context_length": 1024,
+                "max_prefill_len": 1024,
+                "details": {
+                    "format": "NPU2",
+                    "family": "qwen3vl-flash",
+                    "think": false,
+                    "parameter_size": "4B",
+                    "quantization_level": "Q4_1"
+                },
+                "label": [
+                    "vision",
+                    "single-turn"
+                ],
+                "footprint": 3.9
+            }
+        },
         "gemma4-it": {
             "e2b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Gemma4-E2B-IT-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Gemma4-E2B-IT-NPU2/resolve/test_new_template",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma4-E2B-IT-NPU2/tree/test_new_template",
+                "url": "https://huggingface.co/FastFlowLM/Gemma4-E2B-IT-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma4-E2B-IT-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Gemma4-E2B-IT-NPU2",
                 "size": 2000000000,
                 "flm_min_version": "0.9.43",
                 "files": [
@@ -84,6 +192,7 @@
                     "format": "NPU2",
                     "family": "gemma4e",
                     "think": true,
+                    "think_toggleable": true,
                     "parameter_size": "5B",
                     "quantization_level": "Q4_1"
                 },
@@ -94,12 +203,14 @@
                     "tool-calling",
                     "chat-transcription"
                 ],
-                "footprint": 6.0
+                "footprint": 5.6
             },
             "e4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Gemma4-E4B-IT-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Gemma4-E4B-IT-NPU2/resolve/test_new_template",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma4-E4B-IT-NPU2/tree/test_new_template",
+                "url": "https://huggingface.co/FastFlowLM/Gemma4-E4B-IT-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma4-E4B-IT-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Gemma4-E4B-IT-NPU2",
                 "size": 4000000000,
                 "flm_min_version": "0.9.43",
                 "files": [
@@ -119,6 +230,7 @@
                     "format": "NPU2",
                     "family": "gemma4e",
                     "think": true,
+                    "think_toggleable": true,
                     "parameter_size": "8B",
                     "quantization_level": "Q4_1"
                 },
@@ -129,44 +241,165 @@
                     "tool-calling",
                     "chat-transcription"
                 ],
-                "footprint": 9.1
+                "footprint": 8.5
+            },
+            "12b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Gemma4-12B-IT-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Gemma4-12B-IT-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma4-12B-IT-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Gemma4-12B-IT-NPU2",
+                "size": 12000000000,
+                "flm_min_version": "1.0.4",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "image_audio_weights.q4nx"
+                ],
+                "vlm": true,
+                "asr": true,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "gemma4-12b",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "12B",
+                    "quantization_level": "Q4_0"
+                },
+                "label": [
+                    "audio",
+                    "vision",
+                    "reasoning",
+                    "tool-calling",
+                    "chat-transcription"
+                ],
+                "footprint": 8.7
             }
-        },        
-        "qwen3.5": {
-            "0.8b": {
-                "name": "Qwen3.5-0.8B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-0.8B-NPU2/resolve/test_chat_template",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-0.8B-NPU2/tree/test_chat_template",
-                "size": 800000000,
-                "flm_min_version": "0.9.43",
+        },
+        "nemotron3.5-bolt": {
+            "e4b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Nemotron-3.5-Bolt-E4B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Nemotron-3.5-Bolt-E4B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Nemotron-3.5-Bolt-E4B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Nemotron-3.5-Bolt-E4B-NPU2",
+                "size": 4000000000,
+                "flm_min_version": "1.0.11",
                 "files": [
                     "config.json",
                     "model.q4nx",
                     "tokenizer.json",
                     "tokenizer_config.json",
                     "vision_weight.q4nx",
+                    "audio_weight.q4nx",
                     "chat_template.jinja"
                 ],
                 "vlm": true,
+                "asr": true,
                 "default_context_length": 32768,
                 "max_prefill_len": 4096,
                 "details": {
                     "format": "NPU2",
-                    "family": "qwen3.5",
+                    "family": "gemma4e",
                     "think": true,
-                    "parameter_size": "0.8B",
+                    "think_toggleable": true,
+                    "parameter_size": "8B",
                     "quantization_level": "Q4_1"
                 },
                 "label": [
+                    "audio",
                     "vision",
-                    "reasoning"
+                    "reasoning",
+                    "tool-calling",
+                    "chat-transcription"
                 ],
-                "footprint": 1.4
-            },
-            "2b": {
-                "name": "Qwen3.5-2B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-2B-NPU2/resolve/test_chat_template",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-2B-NPU2/tree/test_chat_template",
+                "footprint": 8.5
+            }
+        },
+        "nemotron3.5-bolt-dflash": {
+            "e4b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Nemotron-3.5-Bolt-E4B-DFlash-NPU2",
+                "base_model": "nemotron3.5-bolt:e4b",
+                "url": "https://huggingface.co/FastFlowLM/Nemotron-3.5-Bolt-E4B-DFlash-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Nemotron-3.5-Bolt-E4B-DFlash-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Nemotron-3.5-Bolt-E4B-DFlash-NPU2",
+                "size": 270410098,
+                "flm_min_version": "1.0.12",
+                "files": [
+                    "config.json",
+                    "dflash_weight.q4nx"
+                ],
+                "vlm": true,
+                "asr": true,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "gemma4e-dflash",
+                    "think": true,
+                    "parameter_size": "8B+0.36B",
+                    "quantization_level": "Q4_1"
+                },
+                "label": [
+                    "audio",
+                    "vision",
+                    "reasoning",
+                    "tool-calling",
+                    "chat-transcription",
+                    "speculative"
+                ],
+                "footprint": 8.7
+            }
+        },
+        "nemotron3.5-bolt-dflash-flash": {
+            "e4b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Nemotron-3.5-Bolt-E4B-DFlash-NPU2",
+                "base_model": "nemotron3.5-bolt:e4b",
+                "url": "https://huggingface.co/FastFlowLM/Nemotron-3.5-Bolt-E4B-DFlash-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Nemotron-3.5-Bolt-E4B-DFlash-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Nemotron-3.5-Bolt-E4B-DFlash-NPU2",
+                "size": 270410098,
+                "flm_min_version": "1.0.12",
+                "files": [
+                    "config.json",
+                    "dflash_weight.q4nx"
+                ],
+                "vlm": true,
+                "asr": true,
+                "default_context_length": 1024,
+                "max_prefill_len": 1024,
+                "details": {
+                    "format": "NPU2",
+                    "family": "gemma4e-dflash-flash",
+                    "think": true,
+                    "parameter_size": "8B+0.36B",
+                    "quantization_level": "Q4_1"
+                },
+                "label": [
+                    "audio",
+                    "vision",
+                    "reasoning",
+                    "chat-transcription",
+                    "single-turn",
+                    "speculative"
+                ],
+                "footprint": 8.7
+            }
+        },
+        "gemma4e-flash": {
+            "e2b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Gemma4-E2B-IT-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Gemma4-E2B-IT-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma4-E2B-IT-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Gemma4-E2B-IT-NPU2",
                 "size": 2000000000,
                 "flm_min_version": "0.9.43",
                 "files": [
@@ -175,29 +408,36 @@
                     "tokenizer.json",
                     "tokenizer_config.json",
                     "vision_weight.q4nx",
+                    "audio_weight.q4nx",
                     "chat_template.jinja"
                 ],
                 "vlm": true,
-                "default_context_length": 32768,
-                "max_prefill_len": 4096,
+                "asr": true,
+                "default_context_length": 1024,
+                "max_prefill_len": 1024,
                 "details": {
                     "format": "NPU2",
-                    "family": "qwen3.5",
+                    "family": "gemma4e-flash",
                     "think": true,
-                    "parameter_size": "2B",
+                    "think_toggleable": true,
+                    "parameter_size": "5B",
                     "quantization_level": "Q4_1"
                 },
                 "label": [
+                    "audio",
                     "vision",
                     "reasoning",
-                    "tool-calling"
+                    "chat-transcription",
+                    "single-turn"
                 ],
-                "footprint": 3.2
+                "footprint": 5.6
             },
-            "4b": {
-                "name": "Qwen3.5-4B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-4B-NPU2/resolve/test_chat_template",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-4B-NPU2/tree/test_chat_template",
+            "e4b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Gemma4-E4B-IT-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Gemma4-E4B-IT-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma4-E4B-IT-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Gemma4-E4B-IT-NPU2",
                 "size": 4000000000,
                 "flm_min_version": "0.9.43",
                 "files": [
@@ -206,31 +446,40 @@
                     "tokenizer.json",
                     "tokenizer_config.json",
                     "vision_weight.q4nx",
+                    "audio_weight.q4nx",
                     "chat_template.jinja"
                 ],
                 "vlm": true,
-                "default_context_length": 32768,
-                "max_prefill_len": 4096,
+                "asr": true,
+                "default_context_length": 1024,
+                "max_prefill_len": 1024,
                 "details": {
                     "format": "NPU2",
-                    "family": "qwen3.5",
+                    "family": "gemma4e-flash",
                     "think": true,
-                    "parameter_size": "4B",
+                    "think_toggleable": true,
+                    "parameter_size": "8B",
                     "quantization_level": "Q4_1"
                 },
                 "label": [
+                    "audio",
                     "vision",
                     "reasoning",
-                    "tool-calling"
+                    "chat-transcription",
+                    "single-turn"
                 ],
-                "footprint": 5.2
-            },
-            "9b":{
-                "name": "Qwen3.5-9B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-9B-NPU2/resolve/test_chat_template",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-9B-NPU2/tree/test_chat_template",
-                "size": 9000000000,
-                "flm_min_version": "0.9.43",
+                "footprint": 8.5
+            }
+        },
+        "qwen3.5": {
+            "0.8b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3.5-0.8B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-0.8B-NPU2/resolve/flm_q4k_high_precision",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-0.8B-NPU2/tree/flm_q4k_high_precision",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3.5-0.8B-NPU2/resolve/flm_q4k_high_precision",
+                "size": 800000000,
+                "flm_min_version": "1.0.3",
                 "files": [
                     "config.json",
                     "model.q4nx",
@@ -246,22 +495,346 @@
                     "format": "NPU2",
                     "family": "qwen3.5",
                     "think": true,
-                    "parameter_size": "9B",
-                    "quantization_level": "Q4_1"
+                    "think_toggleable": true,
+                    "parameter_size": "0.8B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning"
+                ],
+                "footprint": 0.72
+            },
+            "2b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3.5-2B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-2B-NPU2/resolve/flm_q4k_high_precision",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-2B-NPU2/tree/flm_q4k_high_precision",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3.5-2B-NPU2/resolve/flm_q4k_high_precision",
+                "size": 2000000000,
+                "flm_min_version": "1.0.3",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_weight.q4nx",
+                    "chat_template.jinja"
+                ],
+                "vlm": true,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "qwen3.5",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "2B",
+                    "quantization_level": "Q4_K"
                 },
                 "label": [
                     "vision",
                     "reasoning",
                     "tool-calling"
                 ],
-                "footprint": 8.94
+                "footprint": 1.9
+            },
+            "4b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3.5-4B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-4B-NPU2/resolve/flm_q4k_high_precision",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-4B-NPU2/tree/flm_q4k_high_precision",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3.5-4B-NPU2/resolve/flm_q4k_high_precision",
+                "size": 4000000000,
+                "flm_min_version": "1.0.3",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_weight.q4nx",
+                    "chat_template.jinja"
+                ],
+                "vlm": true,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "qwen3.5",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "4B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ],
+                "footprint": 3.2
+            },
+            "9b":{
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3.5-9B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-9B-NPU2/resolve/flm_q4k_high_precision",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-9B-NPU2/tree/flm_q4k_high_precision",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3.5-9B-NPU2/resolve/flm_q4k_high_precision",
+                "size": 9000000000,
+                "flm_min_version": "1.0.3",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_weight.q4nx",
+                    "chat_template.jinja"
+                ],
+                "vlm": true,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "qwen3.5",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "9B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ],
+                "footprint": 7.6
             }
-        },        
+        },
+
+        "qwen3.5-flash": {
+            "2b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3.5-2B-NPU2",
+                "xclbin_folder": "Qwen3.5-2B-Flash-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3.5-2B-NPU2/resolve/flm_q4k_high_precision",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.5-2B-NPU2/tree/flm_q4k_high_precision",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3.5-2B-NPU2/resolve/flm_q4k_high_precision",
+                "size": 2000000000,
+                "flm_min_version": "1.0.3",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_weight.q4nx",
+                    "chat_template.jinja"
+                ],
+                "vlm": true,
+                "default_context_length": 1024,
+                "max_prefill_len": 1024,
+                "details": {
+                    "format": "NPU2",
+                    "family": "qwen3.5-flash",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "2B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "single-turn"
+                ],
+                "footprint": 1.9
+            }
+        },
+        "minicpm-v-4.7": {
+            "1b": {
+                "supported_platforms": ["aie2p"],
+                "name": "MiniCPM-V-4.7-1B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/MiniCPM-V-4.7-1B-NPU2/resolve/main",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/MiniCPM-V-4.7-1B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/MiniCPM-V-4.7-1B-NPU2",
+                "size": 1000000000,
+                "flm_min_version": "1.0.8",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_weight.q4nx",
+                    "chat_template.jinja"
+                ],
+                "vlm": true,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "minicpm-v-4.7",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "1B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ],
+                "footprint": 2.1
+            }
+        },
+
+        "minicpm-v-4.7-moe": {
+            "35b-a3b": {
+                "supported_platforms": ["aie2p"],
+                "name": "MiniCPM-V-4.7-35B-A3B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/MiniCPM-V-4.7-35B-A3B-NPU2/resolve/main",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/MiniCPM-V-4.7-35B-A3B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/MiniCPM-V-4.7-35B-A3B-NPU2",
+                "size": 22000000000,
+                "flm_min_version": "1.0.12",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_weight.q4nx",
+                    "chat_template.jinja"
+                ],
+                "vlm": true,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "minicpm-v-4.7-moe",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "35B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ],
+                "footprint": 20.7
+            }
+        },
+
+        "qwen3.6-moe": {
+            "35b-a3b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3.6-35B-A3B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3.6-35B-A3B-NPU2/resolve/flm_q4k_high_precision",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.6-35B-A3B-NPU2/tree/flm_q4k_high_precision",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3.6-35B-A3B-NPU2/resolve/flm_q4k_high_precision",
+                "size": 35000000000,
+                "flm_min_version": "1.0.3",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_weight.q4nx",
+                    "chat_template.jinja"
+                ],
+                "vlm": true,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "qwen3.6-moe",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "35B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ],
+                "footprint": 20.6
+            }
+        },
+        "qwen3.8-mtp": {
+            "27b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3.8-27B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3.8-27B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.8-27B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3.8-27B-NPU2",
+                "size": 27000000000,
+                "flm_min_version": "1.0.7",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "vision_weight.q4nx"
+                ],
+                "vlm": true,
+                "default_context_length": 4096,
+                "max_prefill_len": 4096,
+                "max_bench_length": 8192,
+                "details": {
+                    "format": "NPU2",
+                    "family": "qwen3.8-mtp",
+                    "think": true,
+                    "parameter_size": "27B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling",
+                    "speculative"
+                ],
+                "footprint": 16.8
+            }
+        },
+        "qwen3.8-dflash2": {
+            "27b": {
+                "supported_platforms": ["aie2p"],
+                "name": "Qwen3.8-27B-DFlash2-NPU2",
+                "base_model": "qwen3.8-mtp:27b",
+                "xclbin_folder": "Qwen3.8-27B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3.8-27B-DFlash2-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3.8-27B-DFlash2-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3.8-27B-DFlash2-NPU2",
+                "size": 1388772000,
+                "flm_min_version": "1.0.12",
+                "files": [
+                    "config.json",
+                    "dflash_weight.q4nx"
+                ],
+                "vlm": true,
+                "default_context_length": 4096,
+                "max_prefill_len": 4096,
+                "max_bench_length": 8192,
+                "details": {
+                    "format": "NPU2",
+                    "family": "qwen3.8-dflash2",
+                    "think": true,
+                    "parameter_size": "27B+2B",
+                    "quantization_level": "Q4_K"
+                },
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling",
+                    "speculative"
+                ],
+                "footprint": 18.1
+            }
+        },
         "lfm2": {
             "1.2b": {
+                "supported_platforms": ["aie2p"],
                 "name": "LFM2-1.2B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/LFM2-1.2B-NPU2/resolve/v0.9.24-significant-update",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/LFM2-1.2B-NPU2/tree/v0.9.24-significant-update",
+                "url": "https://huggingface.co/FastFlowLM/LFM2-1.2B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/LFM2-1.2B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/LFM2-1.2B-NPU2",
                 "size": 1200000000,
                 "default_context_length": 32768,
                 "max_prefill_len": 4096,
@@ -281,12 +854,14 @@
                     "tokenizer.json",
                     "tokenizer_config.json"
                 ],
-                "footprint": 0.96
+                "footprint": 0.94
             },
             "2.6b": {
+                "supported_platforms": ["aie2p"],
                 "name": "LFM2-2.6B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/LFM2-2.6B-NPU2/resolve/v0.9.24-significant-update",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/LFM2-2.6B-NPU2/tree/v0.9.24-significant-update",
+                "url": "https://huggingface.co/FastFlowLM/LFM2-2.6B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/LFM2-2.6B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/LFM2-2.6B-NPU2",
                 "size": 2600000000,
                 "default_context_length": 32768,
                 "max_prefill_len": 4096,
@@ -311,9 +886,11 @@
         },
         "lfm2-trans": {
             "2.6b": {
+                "supported_platforms": ["aie2p"],
                 "name": "LFM2-2.6B-Transcript-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/LFM2-2.6B-Transcript-NPU2",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/LFM2-2.6B-Transcript-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/LFM2-2.6B-Transcript-NPU2",
                 "size": 2600000000,
                 "default_context_length": 32768,
                 "max_prefill_len": 4096,
@@ -338,9 +915,11 @@
         },
         "lfm2.5-it": {
             "1.2b": {
+                "supported_platforms": ["aie2p"],
                 "name": "LFM2.5-1.2B-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/LFM2.5-1.2B-NPU2",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/LFM2.5-1.2B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/LFM2.5-1.2B-NPU2",
                 "size": 1200000000,
                 "default_context_length": 32768,
                 "max_prefill_len": 4096,
@@ -360,14 +939,50 @@
                     "tokenizer.json",
                     "tokenizer_config.json"
                 ],
-                "footprint": 0.96
+                "footprint": 0.94
+            }
+        },
+        "lfm3": {
+            "1.7b": {
+                "supported_platforms": ["aie2p"],
+                "name": "LFM3-1.7B-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/LFM3-1.7B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/LFM3-1.7B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/LFM3-1.7B-NPU2",
+                "size": 1700000000,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "format": "NPU2",
+                    "family": "lfm3",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "1.7B",
+                    "quantization_level": "Q4_0"
+                },
+                "flm_min_version": "1.0.11",
+                "vlm": false,
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja"
+                ],
+                "label": [
+                    "reasoning",
+                    "tool-calling"
+                ],
+                "footprint": 1.5
             }
         },
         "lfm2.5-tk": {
             "1.2b": {
+                "supported_platforms": ["aie2p"],
                 "name": "LFM2.5-1.2B-Thinking-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/LFM2.5-1.2B-Thinking-NPU2",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/LFM2.5-1.2B-Thinking-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/LFM2.5-1.2B-Thinking-NPU2",
                 "size": 1200000000,
                 "default_context_length": 32768,
                 "max_prefill_len": 4096,
@@ -391,14 +1006,16 @@
                 "label":[
                     "reasoning"
                 ],
-                "footprint": 0.96
+                "footprint": 0.94
             }
         },
         "phi4-mini-it": {
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Phi4-mini-Instruct-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/Phi4-mini-Instruct-NPU2",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/Phi4-mini-Instruct-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Phi4-mini-Instruct-NPU2",
                 "size": 4000000000,
                 "default_context_length": 32768,
                 "max_prefill_len": 4096,
@@ -420,11 +1037,55 @@
                 "footprint": 3.4
             }
         },
+        "phi4-mini-it-core": {
+            "4b": {
+                "supported_platforms": ["dev04"],
+                "name": "phi4-mini-it-core",
+                "url": "https://huggingface.co/amd/Phi-4-mini-instruct-Q4_G128-GGUF/resolve/812448440ca39fa1a18e1f0f874c18dfdc5be075",
+                "file_url": "https://huggingface.co/api/models/amd/Phi-4-mini-instruct-Q4_G128-GGUF/tree/812448440ca39fa1a18e1f0f874c18dfdc5be075",
+                "use_hf_token": true,
+                "size": 3253347291,
+                "default_context_length": 131072,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "phi4",
+                    "think": false,
+                    "think_toggleable": false,
+                    "parameter_size": "4B",
+                    "quantization_level": "Q4_G128"
+                },
+                "flm_min_version": "1.0.3",
+                "vlm": false,
+                "files": [
+                    "Phi-4-mini-instruct-Q4_G128.gguf",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "config.json"
+                ],
+                "file_sources": {
+                    "tokenizer.json": {
+                        "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct",
+                        "revision": "cfbefacb99257ffa30c83adab238a50856ac3083"
+                    },
+                    "tokenizer_config.json": {
+                        "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct",
+                        "revision": "cfbefacb99257ffa30c83adab238a50856ac3083"
+                    },
+                    "config.json": {
+                        "url": "https://huggingface.co/microsoft/Phi-4-mini-instruct",
+                        "revision": "cfbefacb99257ffa30c83adab238a50856ac3083"
+                    }
+                },
+                "footprint": 3.25
+            }
+        },
         "embed-gemma": {
             "300m": {
+                "supported_platforms": ["aie2p"],
                 "name": "Embedding-Gemma-300M-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/Embedding-Gemma-300M-NPU2",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/Embedding-Gemma-300M-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Embedding-Gemma-300M-NPU2",
                 "size": 300000000,
                 "flm_min_version": "0.9.15",
                 "files": [
@@ -444,14 +1105,245 @@
                 "label":[
                     "embeddings"
                 ],
-                "footprint": 0.62
+                "footprint": 0.61
+            }
+        },
+        "d3": {
+            "edge": {
+                "supported_platforms": ["aie2p"],
+                "name": "D3-Edge-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/D3-Edge-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/D3-Edge-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/D3-Edge-NPU2",
+                "size": 624659058,
+                "flm_min_version": "1.0.12",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "decision_config.json",
+                    "readout.safetensors",
+                    "vision_weight.q4nx"
+                ],
+                "default_context_length": 32768,
+                "max_prefill_len": 32768,
+                "details": {
+                    "format": "NPU2",
+                    "family": "d3",
+                    "think": false,
+                    "parameter_size": "0.6B",
+                    "quantization_level": "Q4_K"
+                },
+                "label":[
+                    "decision"
+                ],
+                "footprint": 0.58
+            },
+            "lite": {
+                "supported_platforms": ["aie2p"],
+                "name": "D3-Lite-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/D3-Lite-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/D3-Lite-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/D3-Lite-NPU2",
+                "size": 800000000,
+                "flm_min_version": "1.0.11",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "decision_config.json",
+                    "readout.safetensors",
+                    "vision_weight.q4nx"
+                ],
+                "default_context_length": 32768,
+                "max_prefill_len": 32768,
+                "details": {
+                    "format": "NPU2",
+                    "family": "d3",
+                    "think": false,
+                    "parameter_size": "0.8B",
+                    "quantization_level": "Q4_K"
+                },
+                "label":[
+                    "decision"
+                ],
+                "footprint": 0.72
+            },
+            "nano": {
+                "supported_platforms": ["aie2p"],
+                "name": "D3-Nano-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/D3-Nano-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/D3-Nano-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/D3-Nano-NPU2",
+                "size": 2020000000,
+                "flm_min_version": "1.0.11",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "decision_config.json",
+                    "readout.safetensors",
+                    "vision_weight.q4nx"
+                ],
+                "default_context_length": 32768,
+                "max_prefill_len": 32768,
+                "details": {
+                    "format": "NPU2",
+                    "family": "d3",
+                    "think": false,
+                    "parameter_size": "2B",
+                    "quantization_level": "Q4_K"
+                },
+                "label":[
+                    "decision"
+                ],
+                "footprint": 1.9
+            },
+            "mini": {
+                "supported_platforms": ["aie2p"],
+                "name": "D3-Mini-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/D3-Mini-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/D3-Mini-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/D3-Mini-NPU2",
+                "size": 3430000000,
+                "flm_min_version": "1.0.11",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "decision_config.json",
+                    "readout.safetensors",
+                    "vision_weight.q4nx"
+                ],
+                "default_context_length": 32768,
+                "max_prefill_len": 32768,
+                "details": {
+                    "format": "NPU2",
+                    "family": "d3",
+                    "think": false,
+                    "parameter_size": "4B",
+                    "quantization_level": "Q4_K"
+                },
+                "label":[
+                    "decision"
+                ],
+                "footprint": 3.2
+            },
+            "flash": {
+                "supported_platforms": ["aie2p"],
+                "name": "D3-Flash-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/D3-Flash-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/D3-Flash-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/D3-Flash-NPU2",
+                "size": 6143033379,
+                "flm_min_version": "1.0.12",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "decision_config.json",
+                    "readout.safetensors",
+                    "vision_weight.q4nx"
+                ],
+                "default_context_length": 32768,
+                "max_prefill_len": 32768,
+                "details": {
+                    "format": "NPU2",
+                    "family": "d3",
+                    "think": false,
+                    "parameter_size": "9B",
+                    "quantization_level": "Q4_K"
+                },
+                "label":[
+                    "decision"
+                ],
+                "scratch": 8000000000,
+                "footprint": 5.7
+            },
+            "turbo": {
+                "supported_platforms": ["aie2p"],
+                "name": "D3-Turbo-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/D3-Turbo-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/D3-Turbo-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/D3-Turbo-NPU2",
+                "size": 16556152417,
+                "flm_min_version": "1.0.11",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "decision_config.json",
+                    "readout.safetensors",
+                    "vision_weight.q4nx"
+                ],
+                "default_context_length": 32768,
+                "max_prefill_len": 32768,
+                "details": {
+                    "format": "NPU2",
+                    "family": "d3",
+                    "think": false,
+                    "parameter_size": "27B",
+                    "quantization_level": "Q4_K"
+                },
+                "label":[
+                    "decision"
+                ],
+                "scratch": 8600000000,
+                "footprint": 15.4
+            },
+            "ultra": {
+                "supported_platforms": ["aie2p"],
+                "name": "D3-Ultra-NPU2",
+                "url": "https://huggingface.co/FastFlowLM/D3-Ultra-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/D3-Ultra-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/D3-Ultra-NPU2",
+                "size": 16556153970,
+                "flm_min_version": "1.0.11",
+                "files": [
+                    "config.json",
+                    "model.q4nx",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "decision_config.json",
+                    "readout.safetensors",
+                    "vision_weight.q4nx"
+                ],
+                "default_context_length": 32768,
+                "max_prefill_len": 32768,
+                "details": {
+                    "format": "NPU2",
+                    "family": "d3",
+                    "think": false,
+                    "parameter_size": "27B",
+                    "quantization_level": "Q4_K"
+                },
+                "label":[
+                    "decision"
+                ],
+                "scratch": 8600000000,
+                "footprint": 15.4
             }
         },
         "whisper-v3": {
             "turbo": {
+                "supported_platforms": ["aie2p"],
                 "name": "Whisper-V3-Turbo-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/Whisper-V3-Turbo-NPU2",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/Whisper-V3-Turbo-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Whisper-V3-Turbo-NPU2",
                 "size": 1000000000,
                 "flm_min_version": "0.9.14",
                 "files": [
@@ -474,14 +1366,16 @@
                     "realtime-transcription",
                     "transcription"
                 ],
-                "footprint": 0.62
+                "footprint": 0.61
             }
         },
         "gemma3": {
             "1b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Gemma3-1B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Gemma3-1B-NPU2/resolve/v0.9.20-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma3-1B-NPU2/tree/v0.9.20-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/Gemma3-1B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma3-1B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Gemma3-1B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 1000000000,
                 "default_context_length": 32768,
@@ -503,9 +1397,11 @@
                 "footprint": 1.2
             },
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Gemma3-4B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2/resolve/v0.9.23-optimize-vision",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma3-4B-NPU2/tree/v0.9.23-optimize-vision",
+                "url": "https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Gemma3-4B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Gemma3-4B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 4000000000,
                 "default_context_length": 65536,
@@ -529,14 +1425,16 @@
                 "label":[
                     "vision"
                 ],
-                "footprint": 4.5
+                "footprint": 4.4
             }
         },
         "translategemma": {
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Translategemma-4B-Instruct-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/Translategemma-4B-Instruct-NPU2/resolve/main",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/Translategemma-4B-Instruct-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Translategemma-4B-Instruct-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 4000000000,
                 "default_context_length": 65536,
@@ -547,7 +1445,7 @@
                     "config.json",
                     "model.q4nx",
                     "tokenizer.json",
-                    "tokenizer_config.json", 
+                    "tokenizer_config.json",
                     "vision_weight.q4nx"
                 ],
                 "details": {
@@ -559,15 +1457,17 @@
                 },
                 "label":[
                     "vision"
-                ],                
-                "footprint": 4.5
+                ],
+                "footprint": 4.4
             }
         },
         "medgemma": {
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Medgemma-4B-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/medgemma-4b-it-NPU2/resolve/main",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/medgemma-4b-it-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Medgemma-4B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 4000000000,
                 "default_context_length": 65536,
@@ -591,14 +1491,16 @@
                 "label":[
                     "vision"
                 ],
-                "footprint": 4.5
+                "footprint": 4.4
             }
         },
         "medgemma1.5": {
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Medgemma-1.5-4B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/medgemma-1.5-4b-it-NPU2/resolve/test_new_template",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/medgemma-1.5-4b-it-NPU2/tree/test_new_template",
+                "url": "https://huggingface.co/FastFlowLM/medgemma-1.5-4b-it-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/medgemma-1.5-4b-it-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Medgemma-1.5-4B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 4000000000,
                 "default_context_length": 65536,
@@ -622,14 +1524,16 @@
                 "label":[
                     "vision"
                 ],
-                "footprint": 4.5
+                "footprint": 4.4
             }
         },
         "llama3.2": {
             "1b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Llama-3.2-1B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2/resolve/v0.9.21-merge-lm-head",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Llama-3.2-1B-NPU2/tree/v0.9.21-merge-lm-head",
+                "url": "https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Llama-3.2-1B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Llama-3.2-1B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 1000000000,
                 "flm_min_version": "0.9.21",
@@ -647,12 +1551,14 @@
                     "parameter_size": "1B",
                     "quantization_level": "Q4_1"
                 },
-                "footprint": 1.3
+                "footprint": 1.2
             },
             "3b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Llama-3.2-3B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2/resolve/v0.9.21-merging-lm-head",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Llama-3.2-3B-NPU2/tree/v0.9.21-merging-lm-head",
+                "url": "https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Llama-3.2-3B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Llama-3.2-3B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 3000000000,
                 "flm_min_version": "0.9.21",
@@ -670,14 +1576,16 @@
                     "parameter_size": "3B",
                     "quantization_level": "Q4_1"
                 },
-                "footprint": 2.7
+                "footprint": 2.6
             }
         },
         "llama3.1": {
             "8b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Llama-3.1-8B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2/resolve/v0.9.21-merge-lm-head",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Llama-3.1-8B-NPU2/tree/v0.9.21-merge-lm-head",
+                "url": "https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Llama-3.1-8B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Llama-3.1-8B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 8000000000,
                 "flm_min_version": "0.9.21",
@@ -700,9 +1608,11 @@
         },
         "deepseek-r1": {
             "8b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Deepseek-R1-Distill-Llama-8B-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/Deepseek-R1-Distill-Llama-8B-NPU2/resolve/main",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/Deepseek-R1-Distill-Llama-8B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Deepseek-R1-Distill-Llama-8B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 8000000000,
                 "flm_min_version": "0.9.43",
@@ -728,9 +1638,11 @@
         },
         "deepseek-r1-0528": {
             "8b": {
+                "supported_platforms": ["aie2p"],
                 "name": "DeepSeek-R1-0528-Qwen3-8B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/DeepSeek-R1-0528-Qwen3-8B-NPU2/resolve/v0.9.22-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/DeepSeek-R1-0528-Qwen3-8B-NPU2/tree/v0.9.22-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/DeepSeek-R1-0528-Qwen3-8B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/DeepSeek-R1-0528-Qwen3-8B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/DeepSeek-R1-0528-Qwen3-8B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 8000000000,
                 "flm_min_version": "0.9.22",
@@ -757,9 +1669,11 @@
         },
         "qwen3": {
             "0.6b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen3-0.6B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2/resolve/v0.9.22-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-0.6B-NPU2/tree/v0.9.22-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-0.6B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3-0.6B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 600000000,
                 "flm_min_version": "0.9.22",
@@ -781,12 +1695,14 @@
                 "label":[
                     "reasoning"
                 ],
-                "footprint": 0.66
+                "footprint": 0.65
             },
             "1.7b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen3-1.7B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3-1.7B-NPU2/resolve/v0.9.22-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-1.7B-NPU2/tree/v0.9.22-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3-1.7B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-1.7B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3-1.7B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 1700000000,
                 "flm_min_version": "0.9.22",
@@ -811,9 +1727,11 @@
                 "footprint": 1.6
             },
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen3-4B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2/resolve/v0.9.22-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-4B-NPU2/tree/v0.9.22-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-4B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3-4B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 4000000000,
                 "flm_min_version": "0.9.22",
@@ -839,9 +1757,11 @@
                 "footprint": 3.1
             },
             "8b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen3-8B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2/resolve/v0.9.22-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-8B-NPU2/tree/v0.9.22-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-8B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3-8B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 8000000000,
                 "flm_min_version": "0.9.22",
@@ -869,9 +1789,11 @@
         },
         "qwen3-tk": {
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen3-4B-Thinking-2507-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-Thinking-2507-NPU2/resolve/v0.9.22-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-4B-Thinking-2507-NPU2/tree/v0.9.22-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-Thinking-2507-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-4B-Thinking-2507-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3-4B-Thinking-2507-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 4000000000,
                 "flm_min_version": "0.9.22",
@@ -899,9 +1821,11 @@
         },
         "qwen3-it": {
             "4b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen3-4B-Instruct-2507-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-Instruct-2507-NPU2/resolve/v0.9.22-faster-q4-1",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-4B-Instruct-2507-NPU2/tree/v0.9.22-faster-q4-1",
+                "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-Instruct-2507-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen3-4B-Instruct-2507-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen3-4B-Instruct-2507-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 4000000000,
                 "flm_min_version": "0.9.22",
@@ -928,9 +1852,11 @@
         },
         "gpt-oss": {
             "20b": {
+                "supported_platforms": ["aie2p"],
                 "name": "GPT-OSS-20B-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/GPT-OSS-20B-NPU2/resolve/v0.9.20-merge-lm-head",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/GPT-OSS-20B-NPU2/tree/v0.9.20-merge-lm-head",
+                "url": "https://huggingface.co/FastFlowLM/GPT-OSS-20B-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/GPT-OSS-20B-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/GPT-OSS-20B-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 20000000000,
                 "flm_min_version": "0.9.20",
@@ -952,14 +1878,16 @@
                 "label":[
                     "reasoning"
                 ],
-                "footprint": 14.0
+                "footprint": 13.5
             }
         },
         "gpt-oss-sg": {
             "20b": {
+                "supported_platforms": ["aie2p"],
                 "name": "GPT-OSS-Safeguard-20b-NPU2",
-                "url": "https://huggingface.co/FastFlowLM/GPT-OSS-Safeguard-20b-NPU2/resolve/v0.9.20-merge-lm-head",
-                "file_url": "https://huggingface.co/api/models/FastFlowLM/GPT-OSS-Safeguard-20b-NPU2/tree/v0.9.20-merge-lm-head",
+                "url": "https://huggingface.co/FastFlowLM/GPT-OSS-Safeguard-20b-NPU2",
+                "file_url": "https://huggingface.co/api/models/FastFlowLM/GPT-OSS-Safeguard-20b-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/GPT-OSS-Safeguard-20b-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 20000000000,
                 "flm_min_version": "0.9.20",
@@ -981,14 +1909,16 @@
                 "label":[
                     "reasoning"
                 ],
-                "footprint": 14.0
+                "footprint": 13.5
             }
         },
         "qwen2.5-it": {
             "3b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen2.5-3B-Instruct-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/Qwen2.5-3B-Instruct-NPU2/resolve/main",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen2.5-3B-Instruct-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen2.5-3B-Instruct-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 3000000000,
                 "flm_min_version": "0.9.32",
@@ -1002,19 +1932,21 @@
                 "max_prefill_len": 4096,
                 "details": {
                     "family": "qwen2",
-                    "think": true,
+                    "think": false,
                     "think_toggleable": false,
                     "parameter_size": "3B",
                     "quantization_level": "Q4_0"
                 },
-                "footprint": 2.5
+                "footprint": 2.4
             }
         },
         "qwen2.5vl-it": {
             "3b": {
+                "supported_platforms": ["aie2p"],
                 "name": "Qwen2.5-VL-3B-Instruct-NPU2",
                 "url": "https://huggingface.co/FastFlowLM/Qwen2.5-VL-3B-Instruct-NPU2/resolve/main",
                 "file_url": "https://huggingface.co/api/models/FastFlowLM/Qwen2.5-VL-3B-Instruct-NPU2/tree/main",
+                "ms_url": "https://modelscope.cn/models/amd/Qwen2.5-VL-3B-Instruct-NPU2",
                 "modified_at": "2025-05-30T00:00:00Z",
                 "size": 3000000000,
                 "flm_min_version": "0.9.32",
@@ -1030,7 +1962,7 @@
                 "max_prefill_len": 4096,
                 "details": {
                     "family": "qwen2vl",
-                    "think": true,
+                    "think": false,
                     "think_toggleable": false,
                     "parameter_size": "3B",
                     "quantization_level": "Q4_1"
@@ -1038,7 +1970,1050 @@
                 "label":[
                     "vision"
                 ],
-                "footprint": 3.8
+                "footprint": 3.7
+            }
+        },
+        "gemma4-it-core":     {
+        "e2b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "gemma4-it-core-e2b",
+            "url": "https://huggingface.co/amd/gemma-4-E2B-it-Q4_G32-GGUF/resolve/cccdcfeae91175e7e5e64c41900b5e6a986148e6",
+            "file_url": "https://huggingface.co/api/models/amd/gemma-4-E2B-it-Q4_G32-GGUF/tree/cccdcfeae91175e7e5e64c41900b5e6a986148e6",
+            "use_hf_token": true,
+            "size": 6889739655,
+            "default_context_length": 65536,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "gemma4e",
+                "think": true,
+                "parameter_size": "5B",
+                "quantization_level": "Q4_G32"
+            },
+            "flm_min_version": "1.0.6",
+            "vlm": false,
+            "files": [
+                "gemma-4-E2B-it-Q4_G32.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json",
+                "chat_template.jinja"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/google/gemma-4-E2B-it",
+                    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/google/gemma-4-E2B-it",
+                    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/google/gemma-4-E2B-it",
+                    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7"
+                },
+                "chat_template.jinja": {
+                    "url": "https://huggingface.co/google/gemma-4-E2B-it",
+                    "revision": "3e22461f65e89153144f8adb70e3b8c2cc9845a7"
+                }
+            },
+            "footprint": 6.92,
+            "model_info_key": "gemma4-it-core:e2b",
+            "label": [
+                "reasoning",
+                "tool-calling"
+            ],
+            "asr": false
+        },
+        "e4b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "gemma4-it-core-e4b",
+            "url": "https://huggingface.co/amd/gemma-4-E4B-it-Q4_G32-GGUF/resolve/1aeafabf9fb3f92c6858e506d56881bf78e55243",
+            "file_url": "https://huggingface.co/api/models/amd/gemma-4-E4B-it-Q4_G32-GGUF/tree/1aeafabf9fb3f92c6858e506d56881bf78e55243",
+            "use_hf_token": true,
+            "size": 9771106246,
+            "default_context_length": 65536,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "gemma4e",
+                "think": true,
+                "parameter_size": "8B",
+                "quantization_level": "Q4_G32"
+            },
+            "flm_min_version": "1.0.6",
+            "vlm": false,
+            "files": [
+                "gemma-4-E4B-it-Q4_G32.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json",
+                "chat_template.jinja"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/google/gemma-4-E4B-it",
+                    "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/google/gemma-4-E4B-it",
+                    "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/google/gemma-4-E4B-it",
+                    "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2"
+                },
+                "chat_template.jinja": {
+                    "url": "https://huggingface.co/google/gemma-4-E4B-it",
+                    "revision": "ee0ef6023621cff504d758262d4e04895a5af4a2"
+                }
+            },
+            "footprint": 9.74,
+            "model_info_key": "gemma4-it-core:e4b",
+            "label": [
+                "reasoning",
+                "tool-calling"
+            ],
+            "asr": false
+        }
+    },
+        "qwen3.5-core":     {
+        "4b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "Qwen3.5-4B",
+            "url": "https://huggingface.co/amd/Qwen3.5-4B-Q4_G128-GGUF/resolve/bcc0151518cc195478cba3df3821a09e057ad187",
+            "file_url": "https://huggingface.co/api/models/amd/Qwen3.5-4B-Q4_G128-GGUF/tree/bcc0151518cc195478cba3df3821a09e057ad187",
+            "use_hf_token": true,
+            "size": 3533740685,
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "qwen3.5",
+                "think": true,
+                "parameter_size": "4B",
+                "quantization_level": "Q4_G128, lm_head Q4_G32"
+            },
+            "flm_min_version": "1.0.6",
+            "vlm": false,
+            "files": [
+                "Qwen3.5-4B-Q4_G128.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.5-4B",
+                    "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.5-4B",
+                    "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.5-4B",
+                    "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+                }
+            },
+            "footprint": 4.07,
+            "model_info_key": "qwen3.5-core:4b",
+            "label": [
+                "reasoning",
+                "tool-calling"
+            ]
+        },
+        "9b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "Qwen3.5-9B",
+            "url": "https://huggingface.co/amd/Qwen3.5-9B-Q4_G128-GGUF/resolve/4e22acd7dd3b686965d09a8f48bf24a3fea1aeb8",
+            "file_url": "https://huggingface.co/api/models/amd/Qwen3.5-9B-Q4_G128-GGUF/tree/4e22acd7dd3b686965d09a8f48bf24a3fea1aeb8",
+            "use_hf_token": true,
+            "size": 6276655722,
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "qwen3.5",
+                "think": true,
+                "parameter_size": "9B",
+                "quantization_level": "Q4_G128, lm_head Q4_G32"
+            },
+            "flm_min_version": "1.0.3",
+            "vlm": false,
+            "files": [
+                "Qwen3.5-9B-Q4_G128.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+                    "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+                    "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+                    "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+                }
+            },
+            "footprint": 7.24,
+            "model_info_key": "qwen3.5-core:9b",
+            "label": [
+                "reasoning",
+                "tool-calling"
+            ]
+        }
+    },
+        "qwen3.5-oga-hipep": {
+            "9b": {
+                "name": "Qwen3.5-9B_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Qwen3.5-9B_gpuep_1.0_gpu_128/resolve/f3a9b4aeb60a42542cc4fec561e1f1095e427483",
+                "file_url": "https://huggingface.co/api/models/amd/Qwen3.5-9B_gpuep_1.0_gpu_128/tree/f3a9b4aeb60a42542cc4fec561e1f1095e427483",
+                "size": 7491571939,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "qwen3.5",
+                    "think": true,
+                    "parameter_size": "9B",
+                    "quantization_level": "INT4 RTN group-32, fp16 activations"
+                },
+                "flm_min_version": "1.0.12",
+                "vlm": true,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "embedding.onnx",
+                    "embedding.onnx.data",
+                    "genai_config.json",
+                    "processor_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision.onnx",
+                    "vision.onnx.data"
+                ],
+                "file_sources": {},
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ]
+            },
+            "35b-a3b": {
+                "name": "Qwen3.5-35B-A3B_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Qwen3.5-35B-A3B_gpuep_1.0_gpu_128/resolve/3fd220727224e8894e0a896346720d041d049fe9",
+                "file_url": "https://huggingface.co/api/models/amd/Qwen3.5-35B-A3B_gpuep_1.0_gpu_128/tree/3fd220727224e8894e0a896346720d041d049fe9",
+                "size": 22090435356,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "qwen3.5",
+                    "think": true,
+                    "parameter_size": "35B-A3B",
+                    "quantization_level": "INT4 RTN group-32, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": true,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "embedding.onnx",
+                    "embedding.onnx.data",
+                    "genai_config.json",
+                    "processor_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision.onnx",
+                    "vision.onnx.data"
+                ],
+                "file_sources": {},
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ]
+            },
+            "122b-a10b": {
+                "name": "Qwen3.5-122B-A10B_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Qwen3.5-122B-A10B_gpuep_1.0_gpu_128/resolve/586488aec4bfb4d20d6a5bf1c4ccd4a7400c736a",
+                "file_url": "https://huggingface.co/api/models/amd/Qwen3.5-122B-A10B_gpuep_1.0_gpu_128/tree/586488aec4bfb4d20d6a5bf1c4ccd4a7400c736a",
+                "size": 71789309753,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "qwen3.5",
+                    "think": true,
+                    "parameter_size": "122B-A10B",
+                    "quantization_level": "INT4 RTN group-32, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": true,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "embedding.onnx",
+                    "embedding.onnx.data",
+                    "genai_config.json",
+                    "processor_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision.onnx",
+                    "vision.onnx.data"
+                ],
+                "file_sources": {},
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ]
+            }
+        },
+        "qwen3.6-oga-hipep": {
+            "27b": {
+                "name": "Qwen3.6-27B_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Qwen3.6-27B_gpuep_1.0_gpu_128/resolve/8375cbdb48eedc8d4d32c5dac2d1154fb0b31bd0",
+                "file_url": "https://huggingface.co/api/models/amd/Qwen3.6-27B_gpuep_1.0_gpu_128/tree/8375cbdb48eedc8d4d32c5dac2d1154fb0b31bd0",
+                "size": 17965202975,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "qwen3.5",
+                    "think": true,
+                    "parameter_size": "27B",
+                    "quantization_level": "INT4 RTN group-32, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": true,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "embedding.onnx",
+                    "embedding.onnx.data",
+                    "genai_config.json",
+                    "processor_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision.onnx",
+                    "vision.onnx.data"
+                ],
+                "file_sources": {},
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ]
+            },
+            "35b-a3b": {
+                "name": "Qwen3.6-35B-A3B_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Qwen3.6-35B-A3B_gpuep_1.0_gpu_128/resolve/061f05d3b6bd2350b274e11c3bc7975251732269",
+                "file_url": "https://huggingface.co/api/models/amd/Qwen3.6-35B-A3B_gpuep_1.0_gpu_128/tree/061f05d3b6bd2350b274e11c3bc7975251732269",
+                "size": 22090435475,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "qwen3.5",
+                    "think": true,
+                    "parameter_size": "35B-A3B",
+                    "quantization_level": "INT4 RTN group-32, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": true,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "embedding.onnx",
+                    "embedding.onnx.data",
+                    "genai_config.json",
+                    "processor_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision.onnx",
+                    "vision.onnx.data"
+                ],
+                "file_sources": {},
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ]
+            }
+        },
+        "qwen3.8-oga-hipep": {
+            "27b": {
+                "name": "Qwen3.8-27B_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Qwen3.8-27B_gpuep_1.0_gpu_128/resolve/e133613183b5774ce91108a7954ec5f222388a9a",
+                "file_url": "https://huggingface.co/api/models/amd/Qwen3.8-27B_gpuep_1.0_gpu_128/tree/e133613183b5774ce91108a7954ec5f222388a9a",
+                "size": 16874950402,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "qwen3.5",
+                    "think": true,
+                    "parameter_size": "27B",
+                    "quantization_level": "INT4 K-quant group-128, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": true,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "embedding.onnx",
+                    "embedding.onnx.data",
+                    "genai_config.json",
+                    "processor_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision.onnx",
+                    "vision.onnx.data"
+                ],
+                "file_sources": {},
+                "label": [
+                    "vision",
+                    "reasoning",
+                    "tool-calling"
+                ]
+            }
+        },
+        "qwen2.5-it-oga-hipep": {
+            "14b": {
+                "name": "Qwen2.5-14B-Instruct_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Qwen2.5-14B-Instruct_gpuep_1.0_gpu_128/resolve/efc1134c0ea60c296e823237b8c43fbdd4ab3c04",
+                "file_url": "https://huggingface.co/api/models/amd/Qwen2.5-14B-Instruct_gpuep_1.0_gpu_128/tree/efc1134c0ea60c296e823237b8c43fbdd4ab3c04",
+                "size": 8849120893,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "qwen2",
+                    "think": false,
+                    "think_toggleable": false,
+                    "parameter_size": "14B",
+                    "quantization_level": "INT4 RTN group-128, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": false,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "genai_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json"
+                ],
+                "file_sources": {}
+            }
+        },
+        "qwen2.5-coder-it-oga-hipep": {
+            "14b": {
+                "name": "Qwen2.5-Coder-14B-Instruct_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Qwen2.5-Coder-14B-Instruct_gpuep_1.0_gpu_128/resolve/895046fa2d396914012b7e561990510334a252b7",
+                "file_url": "https://huggingface.co/api/models/amd/Qwen2.5-Coder-14B-Instruct_gpuep_1.0_gpu_128/tree/895046fa2d396914012b7e561990510334a252b7",
+                "size": 8849120893,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "qwen2",
+                    "think": false,
+                    "think_toggleable": false,
+                    "parameter_size": "14B",
+                    "quantization_level": "INT4 RTN group-128, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": false,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "genai_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json"
+                ],
+                "file_sources": {}
+            }
+        },
+        "gemma3-oga-hipep": {
+            "4b": {
+                "name": "Gemma3-4B-it_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Gemma3-4B-it_gpuep_1.0_gpu_128/resolve/2c900e07cf2b9e2f20dcebfda02202885e26843f",
+                "file_url": "https://huggingface.co/api/models/amd/Gemma3-4B-it_gpuep_1.0_gpu_128/tree/2c900e07cf2b9e2f20dcebfda02202885e26843f",
+                "size": 4354661282,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "gemma3",
+                    "think": false,
+                    "think_toggleable": false,
+                    "parameter_size": "4B",
+                    "quantization_level": "INT4 RTN group-128, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": false,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "embedding.onnx",
+                    "embedding.onnx.data",
+                    "genai_config.json",
+                    "processor_config.json",
+                    "text.onnx",
+                    "text.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision.onnx",
+                    "vision.onnx.data"
+                ],
+                "file_sources": {
+                    "config.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2",
+                        "revision": "a5ad9dbc7bdf9cdf83b4ddfd951372953da0969a"
+                    }
+                }
+            }
+        },
+        "gemma4-it-oga-hipep": {
+            "12b": {
+                "name": "Gemma-4-12B-it_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Gemma-4-12B-it_gpuep_1.0_gpu_128/resolve/adc217f3ae0f54bd55aa049845f132c6706ba9d9",
+                "file_url": "https://huggingface.co/api/models/amd/Gemma-4-12B-it_gpuep_1.0_gpu_128/tree/adc217f3ae0f54bd55aa049845f132c6706ba9d9",
+                "size": 9446605606,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "gemma4e",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "12B",
+                    "quantization_level": "INT4 K-quant group-32, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": false,
+                "files": [
+                    "audio_encoder/model.onnx",
+                    "audio_encoder/model.onnx.data",
+                    "audio_feature_extraction.json",
+                    "chat_template.jinja",
+                    "config.json",
+                    "decoder/model.onnx",
+                    "decoder/model.onnx.data",
+                    "embedding/model.onnx",
+                    "embedding/model.onnx.data",
+                    "genai_config.json",
+                    "image_processor.json",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_encoder/model.onnx",
+                    "vision_encoder/model.onnx.data"
+                ],
+                "file_sources": {
+                    "config.json": {
+                        "url": "https://huggingface.co/google/gemma-4-12B-it",
+                        "revision": "43c9d014b231474fa7212dbb48a762566c2b255d"
+                    }
+                },
+                "label": [
+                    "reasoning",
+                    "tool-calling"
+                ]
+            },
+            "26b-a4b": {
+                "name": "Gemma-4-26B-A4B-it_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/Gemma-4-26B-A4B-it_gpuep_1.0_gpu_128/resolve/66d30d3b4ae7fd9301c7f603356feb855a63f628",
+                "file_url": "https://huggingface.co/api/models/amd/Gemma-4-26B-A4B-it_gpuep_1.0_gpu_128/tree/66d30d3b4ae7fd9301c7f603356feb855a63f628",
+                "size": 16554791874,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "gemma4e",
+                    "think": true,
+                    "think_toggleable": true,
+                    "parameter_size": "26B-A4B",
+                    "quantization_level": "INT4 block-32, QMoE experts, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": false,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "decoder/model.onnx",
+                    "decoder/model.onnx.data",
+                    "embedding/model.onnx",
+                    "embedding/model.onnx.data",
+                    "genai_config.json",
+                    "image_processor.json",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "vision_encoder/model.onnx",
+                    "vision_encoder/model.onnx.data"
+                ],
+                "file_sources": {
+                    "config.json": {
+                        "url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+                        "revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52"
+                    }
+                },
+                "label": [
+                    "reasoning",
+                    "tool-calling"
+                ]
+            }
+        },
+        "gpt-oss-oga-hipep": {
+            "120b": {
+                "name": "GPT-OSS-120B_gpuep_1.0_gpu_128",
+                "url": "https://huggingface.co/amd/GPT-OSS-120B_gpuep_1.0_gpu_128/resolve/6872e7be72e258754a7ee723dc52d84aec5db960",
+                "file_url": "https://huggingface.co/api/models/amd/GPT-OSS-120B_gpuep_1.0_gpu_128/tree/6872e7be72e258754a7ee723dc52d84aec5db960",
+                "size": 69317428853,
+                "default_context_length": 32768,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "gpt-oss",
+                    "think": true,
+                    "think_toggleable": false,
+                    "parameter_size": "120B",
+                    "quantization_level": "UINT4 AWQ group-32, fp16 activations"
+                },
+                "flm_min_version": "1.0.13",
+                "vlm": false,
+                "files": [
+                    "chat_template.jinja",
+                    "config.json",
+                    "genai_config.json",
+                    "model.onnx",
+                    "model.onnx.data",
+                    "tokenizer.json",
+                    "tokenizer_config.json"
+                ],
+                "file_sources": {
+                    "config.json": {
+                        "url": "https://huggingface.co/openai/gpt-oss-120b",
+                        "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a"
+                    }
+                },
+                "label": [
+                    "reasoning"
+                ]
+            }
+        },
+        "qwen3.6-moe-core":     {
+        "35b-a3b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "Qwen3.6-35B-A3B",
+            "url": "https://huggingface.co/amd/Qwen3.6-35B-A3B-Q4_G32-GGUF/resolve/53a2155ba4237f4bffc3914b2f63cbb0bc68585b",
+            "file_url": "https://huggingface.co/api/models/amd/Qwen3.6-35B-A3B-Q4_G32-GGUF/tree/53a2155ba4237f4bffc3914b2f63cbb0bc68585b",
+            "use_hf_token": true,
+            "size": 21311733654,
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "qwen3.6-moe",
+                "think": true,
+                "parameter_size": "35B",
+                "quantization_level": "Q4_G32"
+            },
+            "flm_min_version": "1.0.6",
+            "vlm": false,
+            "files": [
+                "Qwen3.6-35B-A3B-Q4_G32.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json",
+                "chat_template.jinja"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+                    "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+                    "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+                    "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0"
+                },
+                "chat_template.jinja": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+                    "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0"
+                }
+            },
+            "footprint": 21.3,
+            "model_info_key": "qwen3.6-moe-core:35b-a3b",
+            "label": [
+                "reasoning",
+                "tool-calling"
+            ]
+        }
+    },
+        "qwen3.8-core":     {
+        "27b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "Qwen3.8-27B",
+            "url": "https://huggingface.co/amd/Qwen3.8-27B-Q4_G128-GGUF/resolve/deab6eafc90811fc6738db7c05ec615130074cb3",
+            "file_url": "https://huggingface.co/api/models/amd/Qwen3.8-27B-Q4_G128-GGUF/tree/deab6eafc90811fc6738db7c05ec615130074cb3",
+            "use_hf_token": true,
+            "size": 15977762336,
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "qwen3.8-mtp",
+                "think": true,
+                "parameter_size": "27B",
+                "quantization_level": "Q4_G128"
+            },
+            "flm_min_version": "1.0.11",
+            "vlm": false,
+            "files": [
+                "Qwen3.8-27B-Q4_G128.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json",
+                "chat_template.jinja"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.8-27B",
+                    "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.8-27B",
+                    "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.8-27B",
+                    "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+                },
+                "chat_template.jinja": {
+                    "url": "https://huggingface.co/Qwen/Qwen3.8-27B",
+                    "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+                }
+            },
+            "footprint": 15.96,
+            "model_info_key": "qwen3.8-core:27b",
+            "label": [
+                "reasoning",
+                "tool-calling"
+            ]
+        }
+    },
+        "qwen3-core":     {
+        "0.6b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "qwen3-0.6b-core",
+            "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/50968a4468ef4233ed78cd7c3de230dd1d61a56b",
+            "file_url": "https://huggingface.co/api/models/unsloth/Qwen3-0.6B-GGUF/tree/50968a4468ef4233ed78cd7c3de230dd1d61a56b",
+            "size": 650881322,
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "qwen3",
+                "think": false,
+                "think_toggleable": true,
+                "parameter_size": "0.6B",
+                "quantization_level": "Q8_0 -> group-64, lm_head group-32"
+            },
+            "flm_min_version": "1.0.6",
+            "vlm": false,
+            "files": [
+                "Qwen3-0.6B-Q8_0.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2",
+                    "revision": "b584799232c962f693e0e5be99606fc4eca6811e"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2",
+                    "revision": "b584799232c962f693e0e5be99606fc4eca6811e"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2",
+                    "revision": "b584799232c962f693e0e5be99606fc4eca6811e"
+                }
+            },
+            "footprint": 0.64,
+            "model_info_key": "qwen3-core:0.6b"
+        },
+        "1.7b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "qwen3-1.7b-core",
+            "url": "https://huggingface.co/amd/Qwen3-1.7B-Q4_G128-GGUF/resolve/02e64d5de4076fbc3a989c1685a63ca9cb830c85",
+            "file_url": "https://huggingface.co/api/models/amd/Qwen3-1.7B-Q4_G128-GGUF/tree/02e64d5de4076fbc3a989c1685a63ca9cb830c85",
+            "use_hf_token": true,
+            "size": 1556705290,
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "qwen3",
+                "think": true,
+                "think_toggleable": true,
+                "parameter_size": "1.7B",
+                "quantization_level": "Q4_G128, lm_head Q4_G32"
+            },
+            "flm_min_version": "1.0.6",
+            "vlm": false,
+            "files": [
+                "Qwen3-1.7B-Q4_G128.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-1.7B-NPU2",
+                    "revision": "1b452c9ab53dcc580fab244d3dc4d808185ceaca"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-1.7B-NPU2",
+                    "revision": "1b452c9ab53dcc580fab244d3dc4d808185ceaca"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-1.7B-NPU2",
+                    "revision": "1b452c9ab53dcc580fab244d3dc4d808185ceaca"
+                }
+            },
+            "footprint": 1.54,
+            "model_info_key": "qwen3-core:1.7b"
+        },
+        "4b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "qwen3-4b-core",
+            "url": "https://huggingface.co/amd/Qwen3-4B-Q4_G128-GGUF/resolve/80a8efd4277fe4d5846d3f04c5cdbd17e913aa11",
+            "file_url": "https://huggingface.co/api/models/amd/Qwen3-4B-Q4_G128-GGUF/tree/80a8efd4277fe4d5846d3f04c5cdbd17e913aa11",
+            "use_hf_token": true,
+            "size": 2895562329,
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "qwen3",
+                "think": true,
+                "think_toggleable": true,
+                "parameter_size": "4B",
+                "quantization_level": "Q4_G128"
+            },
+            "flm_min_version": "1.0.6",
+            "vlm": false,
+            "files": [
+                "Qwen3-4B-Q4_G128.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2",
+                    "revision": "07651f11cac70ff5b7a81731643dee6f6e7baee1"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2",
+                    "revision": "07651f11cac70ff5b7a81731643dee6f6e7baee1"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2",
+                    "revision": "07651f11cac70ff5b7a81731643dee6f6e7baee1"
+                }
+            },
+            "footprint": 2.89,
+            "model_info_key": "qwen3-core:4b"
+        },
+        "8b": {
+            "supported_platforms": [
+                "dev04"
+            ],
+            "name": "qwen3-8b-core",
+            "url": "https://huggingface.co/amd/Qwen3-8B-Q4_G128-GGUF/resolve/f34630e023ed33ce47ff6c0fe33548cd34dbd731",
+            "file_url": "https://huggingface.co/api/models/amd/Qwen3-8B-Q4_G128-GGUF/tree/f34630e023ed33ce47ff6c0fe33548cd34dbd731",
+            "use_hf_token": true,
+            "size": 5262533740,
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "details": {
+                "family": "qwen3",
+                "think": true,
+                "think_toggleable": true,
+                "parameter_size": "8B",
+                "quantization_level": "Q4_G128, lm_head Q4_G32"
+            },
+            "flm_min_version": "1.0.6",
+            "vlm": false,
+            "files": [
+                "Qwen3-8B-Q4_G128.gguf",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "config.json"
+            ],
+            "file_sources": {
+                "tokenizer.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2",
+                    "revision": "941c148c228496682e95c413cb90025f73200af2"
+                },
+                "tokenizer_config.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2",
+                    "revision": "941c148c228496682e95c413cb90025f73200af2"
+                },
+                "config.json": {
+                    "url": "https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2",
+                    "revision": "941c148c228496682e95c413cb90025f73200af2"
+                }
+            },
+            "footprint": 5.26,
+            "model_info_key": "qwen3-core:8b"
+        }
+    },
+        "llama3.2-core": {
+            "1b": {
+                "supported_platforms": ["dev04"],
+                "name": "llama3.2-1b-core",
+                "url": "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/067b946cf014b7c697f3654f621d577a3e3afd1c",
+                "file_url": "https://huggingface.co/api/models/bartowski/Llama-3.2-1B-Instruct-GGUF/tree/067b946cf014b7c697f3654f621d577a3e3afd1c",
+                "size": 1330174015,
+                "default_context_length": 131072,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "llama3",
+                    "think": false,
+                    "think_toggleable": false,
+                    "parameter_size": "1B",
+                    "quantization_level": "Q8_0 -> group-64"
+                },
+                "flm_min_version": "1.0.6",
+                "vlm": false,
+                "files": [
+                    "Llama-3.2-1B-Instruct-Q8_0.gguf",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "config.json"
+                ],
+                "file_sources": {
+                    "tokenizer.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2",
+                        "revision": "7bb88fcd5653534fe065b911123d10294b62a8d1"
+                    },
+                    "tokenizer_config.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2",
+                        "revision": "7bb88fcd5653534fe065b911123d10294b62a8d1"
+                    },
+                    "config.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2",
+                        "revision": "7bb88fcd5653534fe065b911123d10294b62a8d1"
+                    }
+                },
+                "footprint": 1.32
+            },
+            "3b": {
+                "supported_platforms": ["dev04"],
+                "name": "llama3.2-3b-core",
+                "url": "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+                "file_url": "https://huggingface.co/api/models/bartowski/Llama-3.2-3B-Instruct-GGUF/tree/5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+                "size": 3430990303,
+                "default_context_length": 131072,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "llama3",
+                    "think": false,
+                    "think_toggleable": false,
+                    "parameter_size": "3B",
+                    "quantization_level": "Q8_0 -> group-64"
+                },
+                "flm_min_version": "1.0.6",
+                "vlm": false,
+                "files": [
+                    "Llama-3.2-3B-Instruct-Q8_0.gguf",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "config.json"
+                ],
+                "file_sources": {
+                    "tokenizer.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2",
+                        "revision": "2003cdb18a1ecdda338ff4ff39d3e403476e49ae"
+                    },
+                    "tokenizer_config.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2",
+                        "revision": "2003cdb18a1ecdda338ff4ff39d3e403476e49ae"
+                    },
+                    "config.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2",
+                        "revision": "2003cdb18a1ecdda338ff4ff39d3e403476e49ae"
+                    }
+                },
+                "footprint": 3.42
+            }
+        },
+        "llama3.1-core": {
+            "8b": {
+                "supported_platforms": ["dev04"],
+                "name": "llama3.1-8b-core",
+                "url": "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/bf5b95e96dac0462e2a09145ec66cae9a3f12067",
+                "file_url": "https://huggingface.co/api/models/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/tree/bf5b95e96dac0462e2a09145ec66cae9a3f12067",
+                "size": 8549866848,
+                "default_context_length": 131072,
+                "max_prefill_len": 4096,
+                "details": {
+                    "family": "llama3",
+                    "think": false,
+                    "think_toggleable": false,
+                    "parameter_size": "8B",
+                    "quantization_level": "Q8_0 -> group-64"
+                },
+                "flm_min_version": "1.0.6",
+                "vlm": false,
+                "files": [
+                    "Meta-Llama-3.1-8B-Instruct-Q8_0.gguf",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "config.json"
+                ],
+                "file_sources": {
+                    "tokenizer.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2",
+                        "revision": "527006483dca6c9d75474ff92b8a6bdd8f257914"
+                    },
+                    "tokenizer_config.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2",
+                        "revision": "527006483dca6c9d75474ff92b8a6bdd8f257914"
+                    },
+                    "config.json": {
+                        "url": "https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2",
+                        "revision": "527006483dca6c9d75474ff92b8a6bdd8f257914"
+                    }
+                },
+                "footprint": 8.54
             }
         }
     }

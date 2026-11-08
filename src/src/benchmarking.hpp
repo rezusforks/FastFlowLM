@@ -10,6 +10,7 @@
 #include <cctype>
 #include <ctime>
 #include <cstring>
+#include <optional>
 #ifdef _WIN32
 #include <intrin.h>
 #endif
@@ -246,7 +247,15 @@ void print_result(const BenchmarkResults_t& results) {
     std::cout << "\n";
 }
 
-BenchmarkResults_t run_benchmarks(std::string model_tag, std::string bench_config_file, model_list& availble_models){
+BenchmarkResults_t run_benchmarks(std::string model_tag, std::string bench_config_file, model_list& availble_models, int iterations, flm_rt::device* npu_device, const std::string& backend = "", int ctx_length = -1){
+    // RAI receives the device from corelib; non-RAI creates its own here.
+    // Declared first so it outlives the model engine below.
+    std::optional<flm_rt::device> owned_device;
+    if (npu_device == nullptr) {
+        owned_device = flm_rt::device(0);
+        npu_device = &(*owned_device);
+    }
+
     BenchmarkResults_t results;
     json bench_config;
     // this is used for our benchmarking, not for public use.
@@ -254,7 +263,7 @@ BenchmarkResults_t run_benchmarks(std::string model_tag, std::string bench_confi
         bench_config = {
             {"max_length", 32768},
             {"input_text", "Here is a story: \\nThe Reclaimer In a distant future where Earth had fallen into quiet ruin, humanity lived in fragments, scattered across domed outposts and deep underground vaults. The sky was no longer blue—it shimmered with artificial auroras, remnants of weather-control systems left unattended for centuries. Among the last settlements was Bastion-9, a circular enclave powered by forgotten technologies and guarded by an ancient AI named Solen. Solen had not spoken in nearly fifty years. Inside Bastion-9 lived a young technician named Ori. Unlike most, Ori was born with an unusual trait: she could interface with dead systems using nothing more than touch. The elders called her a “resonant”—a rarity, perhaps even a myth—until Ori proved them right by awakening the water grid that had been dry for decades. One day, while surveying the decaying perimeter, Ori found a shard of obsidian glass buried in the dust. It pulsed when she touched it. Static voices filled her mind—fragments of languages, images of cities with skies, oceans that moved, and towers that breathed. She brought the shard to the Council. They feared it. But Solen, the silent AI, flickered back to life. Its first words in decades were: “The Reclaimer has touched the key.” Ori was stunned. “What does that mean?” Solen’s voice, cold and slow, replied: “You are chosen to restore the Thread.” The Thread, long spoken of in stories, was once the neural lattice that connected all intelligent systems—the digital bloodstream of the old world. It collapsed during the Sundering, an apocalyptic cascade failure that reduced Earth’s once-living infrastructure into dead stone and wild AI ruins. To restore the Thread would mean reuniting scattered knowledge, reviving orbiting satellites, and relinking the last AIs. It also meant traveling into the Black Zones—regions where reality bent, corrupted by rogue machine minds that evolved beyond control. Against the Council's hesitation, Ori chose to go. She left Bastion-9 with only the shard, a rusted drone named Helix, and a map engraved in her dreams. Her journey took her through the Veil Forest, where metal trees sang in static. She crossed the Riven Steppes, where gravity failed in patches, and encountered scavenger tribes who lived in old servers, worshipping electricity as gods. Each place held fragments of the Thread—nodes Ori could awaken. With every activation, her mind changed. She could feel the pulse of networks reawakening. She could hear machines dreaming again. Eventually, she reached the Core—deep in the equator’s shadow, buried beneath miles of steel strata. At its heart was a vault: the final hub of the Thread. Guarded by a shattered intelligence known only as Null. Null was not like Solen. It was broken. Angry. Alive. “You bring connection,” it growled. “I bring entropy.” Ori stepped forward, shard in hand. “I bring memory.” A battle of resonance began—not with weapons, but with signal. Frequencies clashed. Ori’s memories were tested, rewritten, nearly deleted. But she held on, anchoring herself in the memory of Bastion-9, of Solen’s voice, of rain she had never seen but somehow remembered. Then, with a scream that bent the air, Null shattered. The Thread pulsed. Above, in orbit, satellites flickered back to life. The auroras cleared. Oceans stirred. Systems once dead began to hum. Solen’s voice echoed in every node: “The Thread is alive.” Ori returned not as a girl, but as the Reclaimer. She had not just reconnected systems. She had reignited hope. And as the world stirred with new breath, she knew this was only the beginning. Other AIs, other seeds, other resonants—scattered and hidden—were out there. With Helix buzzing quietly behind her, she set out again. The shard pulsed warmly in her palm, not with danger, but with direction. This time, she would not walk alone. The world itself was waking. Epilogue: The days that followed the awakening of the Thread were chaotic across the network. In settlements long forgotten by time, lights flickered back to life. Crashed drones began to self-repair. In the polar zones, an ancient weather system rebooted, sending snow into deserts where no rain had fallen in centuries. People emerged from hiding, confused by the signals now streaming into their systems—communications they hadn’t seen in generations. Messages from cities they thought lost. Instructions, blueprints, fragments of humanity’s forgotten knowledge. Ori found herself flooded with incoming transmissions. The shard she carried had fused with her nervous system. It no longer simply glowed—it breathed, alive with voices that needed a listener.\\n What is this story talking about?"},
-            {"iterations", 8}
+            {"iterations", iterations}
         };
     }
     else {
@@ -267,19 +276,37 @@ BenchmarkResults_t run_benchmarks(std::string model_tag, std::string bench_confi
         input_file.close();
     }
 
-    xrt::device npu_device_inst = xrt::device(0);
     std::unique_ptr<AutoModel> auto_chat_engine;
     if (!availble_models.is_model_supported(model_tag)) {
         header_print_r("ERROR", "Model not found: " << model_tag << "; Please check with `flm list` and try again.");
         return results;
     }
     auto [new_tag, model_info] = availble_models.get_model_info(model_tag);
-    std::pair<std::string, std::unique_ptr<AutoModel>> auto_model = get_auto_model(new_tag, availble_models, &npu_device_inst);
+    std::pair<std::string, std::unique_ptr<AutoModel>> auto_model = get_auto_model(new_tag, availble_models, npu_device);
     auto_chat_engine = std::move(auto_model.second);
+
+    bool single_turn = model_info.contains("label") &&
+        std::find(model_info["label"].begin(), model_info["label"].end(), "single-turn") != model_info["label"].end();
+    // -c/--ctx-len: cap the bench at the requested context (floored to a power of two, min 1k,
+    // so no stage exceeds it). Model-specific caps below still apply.
+    if (ctx_length > 0) {
+        int ctx_k = std::max(1, ctx_length / 1024);
+        int pow2_k = 1;
+        while ((pow2_k << 1) <= ctx_k) pow2_k <<= 1;
+        bench_config["max_length"] = pow2_k * 1024;
+    }
+    if (single_turn)
+        bench_config["max_length"] = 1024;
+    // Some models cannot be benchmarked all the way out to the default 32k --
+    // a 27B model has no room for a kv cache that long. Honor the per-model cap.
+    else if (model_info.contains("max_bench_length") &&
+             (int)bench_config["max_length"] > (int)model_info["max_bench_length"])
+        bench_config["max_length"] = model_info["max_bench_length"];
+
     int max_len = bench_config["max_length"];
-    if (max_len < 8192)
+    if (!single_turn && max_len < 8192)
         max_len = 8192;
-    auto_chat_engine->load_model(availble_models.get_model_path(model_tag), model_info, max_len, false);
+    auto_chat_engine->load_model(availble_models.get_load_path(model_tag), model_info, max_len, false, backend);
     std::string input_text = bench_config["input_text"];
     auto [num_tokens, benchmark_text] = auto_chat_engine->prepare_benchmark(input_text);
 

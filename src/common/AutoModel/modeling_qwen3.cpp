@@ -10,20 +10,10 @@
 
 
 /************              Qwen3 family            **************/
-Qwen3::Qwen3(xrt::device* npu_device_inst) : AutoModel(npu_device_inst, "Qwen3") {}
+Qwen3::Qwen3(flm_rt::device* npu_device_inst) : AutoModel(npu_device_inst, "Qwen3") {}
 
-void Qwen3::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption) {
-    this->_shared_load_model(model_path, model_info, default_context_length, enable_preemption);
-    
-    this->q4nx = std::make_unique<Q4NX>(this->model_path);
-    // lm_config->model_type == qwen3
-    this->lm_engine = std::make_unique<qwen3_npu>(*this->lm_config, this->npu.get(), this->MAX_L);
-
-    this->lm_engine->load_weights(*this->q4nx);
-
-    //free the q4nx
-    this->q4nx.reset();
-    this->lm_engine->clear_context();
+void Qwen3::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption, const std::string& backend) {
+    this->_shared_load_backend(model_path, model_info, default_context_length, enable_preemption, backend);
     this->setup_tokenizer(model_path);
     this->sampler.reset();
 
@@ -40,24 +30,33 @@ void Qwen3::load_model(std::string model_path, json model_info, int default_cont
     for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
         this->profiler_list[i].reset();
     }
+    this->_prefix_attach(this->lm_engine, qwen3_npu_state_api(this->lm_engine));
 }
 
 void Qwen3::setup_tokenizer(std::string model_path) {
     auto tokenizer_config = this->_shared_setup_tokenizer(model_path);
 }
 
-std::string Qwen3::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools) {
+std::string Qwen3::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools, bool continue_final_message) {
     minja::chat_template_inputs inputs;
-    inputs.add_generation_prompt = true;
     inputs.messages = messages;
     inputs.extra_context = this->extra_context;
     inputs.extra_context["enable_thinking"] = this->enable_think;
     if (!tools.empty() && this->enable_tool)
         inputs.tools = tools;
-    return this->chat_tmpl->apply(inputs);
+    return this->_render_chat_template(inputs, continue_final_message);
+}
+
+void Qwen3::fail_inference() {
+    const bool poisoned = this->backend_ && this->backend_->poisoned();
+    this->_shared_after_inference_failure(poisoned);
+    throw ModelRequestError(500, true, poisoned
+        ? "Inference failed; unload/reload is required because the model is poisoned"
+        : "Inference failed; the current conversation was cleared");
 }
 
 bool Qwen3::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
+    this->_shared_guard_poisoned();
     // preprocess
     this->profiler_list[TKOEN_ENCODE_TIME].start();
     std::string templated_text;
@@ -66,7 +65,7 @@ bool Qwen3::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::
         return false;
     }
     if (!input.messages.empty()) { // already a formated messages, usually from REST API
-        templated_text = this->apply_chat_template(input.messages, input.tools);
+        templated_text = this->apply_chat_template(input.messages, input.tools, meta_info.continue_final_message);
     }
     else if (!input.prompt.empty()) { // a pure text, usually from the cli
         nlohmann::ordered_json messages;
@@ -79,27 +78,60 @@ bool Qwen3::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::
 
     this->profiler_list[TKOEN_ENCODE_TIME].stop(tokens.size());
 
-    // hardware
-    int restore_idx = -1;
-    qwen3_npu *qwen3_engine = dynamic_cast<qwen3_npu*>(this->lm_engine.get());
+    // Prefix slots. With thinking off the template's empty think block is left out of the prefill (decode() feeds it),
+    // because the next turn does not render it; with thinking on the generation prompt is how the next turn renders the reply.
+    // A continued message keeps all its tokens: they are the client's text, not the generation prompt.
+    const size_t trim_tokens = (this->enable_think || meta_info.continue_final_message) ? 0 : 4;
+    if (this->_prefix_slot_mode(meta_info, tokens.size(), trim_tokens)) {
+        try {
+            return this->_prefix_text_insert(meta_info, tokens, trim_tokens, "<|im_start|>user", is_cancelled, input.requested_max_new_tokens);
+        } catch (const ModelRequestError&) {
+            throw;
+        } catch (...) {
+            this->fail_inference();
+        }
+    }
+    this->_prefix_legacy_path();
 
+    // hardware: checkpoint and restore are causal_lm virtuals, so this works on
+    // whichever backend's engine is loaded
     if (meta_info.restore_allowed) {
-        restore_idx = qwen3_engine->restore();
-        this->total_tokens = restore_idx;
-        this->token_history = checkpoint_his; // restore the token history to be consistent with the restored KV cache, which is crucial for correct functioning of _shared_insert's prefix-matching logic
+        const int restore_idx = this->lm_engine->restore();
+        if (restore_idx >= 0) {
+            this->total_tokens = restore_idx;
+            this->token_history = checkpoint_his; // restore the token history to be consistent with the restored KV cache, which is crucial for correct functioning of _shared_insert's prefix-matching logic
+        }
     }
 
     size_t n = tokens.size();
-    tokens.resize(n - (this->enable_think ? 0 : 4));
+    tokens.resize(n - trim_tokens);
 
-    bool success = this->_shared_insert(meta_info, tokens, is_cancelled, nullptr);
+    bool success = false;
+    try {
+        success = this->_shared_insert(meta_info, tokens, is_cancelled, nullptr, 0, input.requested_max_new_tokens);
+    } catch (const ModelRequestError&) {
+        throw;
+    } catch (...) {
+        this->fail_inference();
+    }
 
     checkpoint_his = token_history;
-    int checkpoint_idx = qwen3_engine->checkpoint();
+    this->lm_engine->checkpoint();
     return success;
 }
 
 std::string Qwen3::generate(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled) {
+    this->_shared_guard_poisoned();
+    try {
+        return this->decode(meta_info, length_limit, os, std::move(is_cancelled));
+    } catch (const ModelRequestError&) {
+        throw;
+    } catch (...) {
+        this->fail_inference();
+    }
+}
+
+std::string Qwen3::decode(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled) {
     std::vector<int> sampled_tokens;
     std::string result;
     if (length_limit > 0){
@@ -116,8 +148,20 @@ std::string Qwen3::generate(chat_meta_info_t& meta_info, int length_limit, std::
     std::string token_str;
     int sampled_token;
     int last_sampled_token;
-    if(!enable_think) {
+    // Some backends refuse to decode past a limit of their own, below MAX_L.
+    const uint32_t decode_cap = this->decode_cap();
+    // A continued message trimmed nothing, so it starts from insert()'s sample.
+    if(!enable_think && !meta_info.continue_final_message) {
+        // The empty think block insert() trimmed is decoded here, four steps
+        // the context has to have room for.
+        if (this->total_tokens + 4 >= decode_cap) {
+            header_print("WARNING", "Max length reached, stopping generation...");
+            meta_info.stop_reason = MAX_LENGTH_REACHED;
+            return result;
+        }
         this->token_history.push_back(think_start_id);
+        // fed for the KV cache only, it never reaches the output
+        this->_skip_insert_sample(meta_info);
         this->lm_engine->forward(think_start_id);
         token_str = this->tokenizer->run_time_decoder(think_start_id);
 
@@ -139,18 +183,31 @@ std::string Qwen3::generate(chat_meta_info_t& meta_info, int length_limit, std::
         buffer<bf16> y = this->lm_engine->forward(271);
         this->profiler_list[DECODING_TIME].stop(1);
         token_str = this->tokenizer->run_time_decoder(271);
-        sampled_token = this->sampler->sample(y);
+        sampled_token = this->_sample(y, meta_info);
 
-        this->total_tokens++;
+        // All four went through the engine, so all four occupy the context.
+        this->total_tokens += 4;
         meta_info.generated_tokens++;
         last_sampled_token = sampled_token;
-        token_str = this->tokenizer->run_time_decoder(last_sampled_token);
-        result += token_str;
-        os << token_str << std::flush;
+        // the loop forwards it like insert()'s sample, so history carries it too
+        this->token_history.push_back(last_sampled_token);
+        if (this->is_normal_token(last_sampled_token)) {
+            token_str = this->tokenizer->run_time_decoder(last_sampled_token);
+            result += token_str;
+            os << token_str << std::flush;
+        }
+        if (this->is_eos(last_sampled_token)) {
+            // the reply ended before it started; no engine has run the eos
+            this->token_history.pop_back();
+            meta_info.stop_reason = reason;
+            return result;
+        }
     }
     else {
         last_sampled_token = this->last_token;
         this->token_history.push_back(this->last_token);
+        // the sample insert() took is the reply's first token, and counts toward the limit
+        meta_info.generated_tokens++;
         if (this->is_normal_token(last_sampled_token) && last_sampled_token != -1){
             std::string token_str = this->tokenizer->run_time_decoder(last_sampled_token);
             result += token_str;
@@ -158,23 +215,26 @@ std::string Qwen3::generate(chat_meta_info_t& meta_info, int length_limit, std::
 
         }
         if (this->is_eos(last_sampled_token)){
+            // Sampled from the prefill, so no engine has run it.
+            this->token_history.pop_back();
+            meta_info.stop_reason = reason;
             return result;
         }
     }
 
-    if (this->total_tokens >= this->MAX_L){
-        header_print("WARNING", "Max length reached, stopping generation...");
+    if (this->total_tokens >= decode_cap){
         reason = MAX_LENGTH_REACHED;
-        return result;
     }
-    while (this->total_tokens < this->MAX_L){
+    else if ((length_limit > 0) && (meta_info.generated_tokens >= length_limit)){
+        reason = MAX_LENGTH_REACHED;
+    }
+    else while (true){
+        if (this->total_tokens >= decode_cap){
+            reason = MAX_LENGTH_REACHED;
+            break;
+        }
         if (is_cancelled()) {
             reason = CANCEL_DETECTED;
-            // reset stream content 
-            buffer_.clear();
-            current_mode_ = StreamEventType::CONTENT;
-            tool_name_.clear();
-            is_in_tool_block_ = false;
             break;
         }
         this->profiler_list[DECODING_TIME].start();
@@ -182,7 +242,7 @@ std::string Qwen3::generate(chat_meta_info_t& meta_info, int length_limit, std::
         this->profiler_list[DECODING_TIME].stop(1);
 
         this->profiler_list[SAMPLING_TIME].start();
-        int sampled_token = this->sampler->sample(y);
+        int sampled_token = this->_sample(y, meta_info);
         this->profiler_list[SAMPLING_TIME].stop(1);
         this->total_tokens++;
         last_sampled_token = sampled_token;
@@ -197,7 +257,15 @@ std::string Qwen3::generate(chat_meta_info_t& meta_info, int length_limit, std::
         this->token_history.push_back(sampled_token);
         if (this->is_eos(sampled_token)){
             meta_info.generated_tokens++;
-            this->lm_engine->forward(last_sampled_token);
+            // The forward writes row total_tokens, which is past the end of the
+            // engine's KV window once the context is full.
+            if (this->forward_on_eos && this->total_tokens < decode_cap &&
+                (!this->backend_ || this->backend_->forwards_past_eos())) {
+                this->lm_engine->forward(last_sampled_token);
+            } else {
+                // The engine never ran it, so the next prompt has to carry it.
+                this->token_history.pop_back();
+            }
             break;
         }
         meta_info.generated_tokens++;
@@ -208,7 +276,12 @@ std::string Qwen3::generate(chat_meta_info_t& meta_info, int length_limit, std::
     }
     meta_info.decoding_duration = (uint64_t)(time_utils::cast_to_us(this->profiler_list[DECODING_TIME].get_total_time()).first) * 1e3;
     meta_info.stop_reason = reason;
-    if (this->total_tokens >= this->MAX_L){
+    if (reason != EOT_DETECTED) {
+        // Cut short after sampling its last token: no engine has run that one,
+        // so the next prompt has to carry it.
+        this->token_history.pop_back();
+    }
+    if (this->total_tokens >= decode_cap){
         header_print("WARNING", "Max length reached, stopping generation...");
     }
     std::cout << std::endl;
@@ -223,91 +296,11 @@ std::string Qwen3::generate_with_prompt(chat_meta_info_t& meta_info, lm_uniform_
     return this->_shared_generate(meta_info, length_limit, os);
 }
 
-NonStreamResult Qwen3::parse_nstream_content(const std::string response_text) {
-    NonStreamResult result;
-
-    std::string name, arguments;
-    std::string content, reasoning_content;
-
-    std::string think_start_tag = "<think>";
-    std::string think_end_tag = "</think>";
-    std::string tool_start_tag = "<tool_call>";
-    std::string tool_end_tag = "</tool_call>";
-
-    size_t think_start_pos = response_text.find(think_start_tag);
-    size_t think_end_pos = response_text.find(think_end_tag);
-    size_t tool_start_pos = response_text.find(tool_start_tag);
-    size_t tool_end_pos = response_text.find(tool_end_tag);
-
-    bool is_reasoning = !(think_start_pos == std::string::npos || think_end_pos == std::string::npos);
-    bool is_tool = !(tool_start_pos == std::string::npos || tool_end_pos == std::string::npos);
-    bool is_content = !is_tool;
-
-    if (is_reasoning) {
-        // Find reasoning part
-        think_start_pos += think_start_tag.length();
-        std::string reasoning_str = response_text.substr(think_start_pos, think_end_pos - think_start_pos);
-        result.reasoning_content = reasoning_str;
-    }
-
-    if (is_tool) {
-        // Find tool calling part
-        tool_start_pos += tool_start_tag.length();
-        std::string json_str = response_text.substr(tool_start_pos, tool_end_pos - tool_start_pos);
-        // Parse "name" 
-        std::string key_name = "\"name\": \"";
-        size_t name_start = json_str.find(key_name);
-        if (name_start != std::string::npos) {
-            name_start += key_name.length();
-            size_t name_end = json_str.find("\"", name_start);
-            if (name_end != std::string::npos) {
-                name = json_str.substr(name_start, name_end - name_start);
-            }
-        }
-        // Parse "arguments"
-        std::string key_args = "\"arguments\":";
-        size_t args_pos = json_str.find(key_args);
-        if (args_pos != std::string::npos) {
-            size_t brace_start = json_str.find("{", args_pos);
-            size_t brace_end = json_str.rfind("}"); // Find the last closing brace
-
-            if (brace_start != std::string::npos && brace_end != std::string::npos && brace_end > brace_start) {
-                arguments = json_str.substr(brace_start, brace_end - brace_start);
-            }
-        }
-
-        result.tool_name = name;
-        result.tool_args = arguments;
-
-    }
-    else if (is_content) {
-        std::string content_str = response_text.substr(think_end_pos + think_end_tag.length());
-        result.content = content_str;
-    }
-
-    return result;
-}
-
-StreamResult Qwen3::parse_stream_content(const std::string content) {
-    return _shared_think_tool_calling_pasrsed(content);
-}
-
 /************              Qwen3_IT family            **************/
-Qwen3_IT::Qwen3_IT(xrt::device* npu_device_inst) : AutoModel(npu_device_inst) {}
+Qwen3_IT::Qwen3_IT(flm_rt::device* npu_device_inst) : AutoModel(npu_device_inst) {}
 
-void Qwen3_IT::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption) {
-    this->_shared_load_model(model_path, model_info, default_context_length, enable_preemption);
-    
-    this->q4nx = std::make_unique<Q4NX>(this->model_path);
-
-    // lm_config->model_type == qwen3
-    this->lm_engine = std::make_unique<qwen3_npu>(*this->lm_config, this->npu.get(), this->MAX_L);
-
-    this->lm_engine->load_weights(*this->q4nx);
-
-    //free the q4nx
-    this->q4nx.reset();
-    this->lm_engine->clear_context();
+void Qwen3_IT::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption, const std::string& backend) {
+    this->_shared_load_backend(model_path, model_info, default_context_length, enable_preemption, backend);
     this->setup_tokenizer(model_path);
     this->sampler.reset();
 
@@ -321,20 +314,20 @@ void Qwen3_IT::load_model(std::string model_path, json model_info, int default_c
     for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
         this->profiler_list[i].reset();
     }
+    this->_prefix_attach(this->lm_engine, qwen3_npu_state_api(this->lm_engine));
 }
 
 void Qwen3_IT::setup_tokenizer(std::string model_path) {
     auto tokenizer_config = this->_shared_setup_tokenizer(model_path);
 }
 
-std::string Qwen3_IT::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools) {
+std::string Qwen3_IT::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools, bool continue_final_message) {
     minja::chat_template_inputs inputs;
-    inputs.add_generation_prompt = true;
     inputs.messages = messages;
     inputs.extra_context = this->extra_context;
     if (!tools.empty())
         inputs.tools = tools;
-    return this->chat_tmpl->apply(inputs);
+    return this->_render_chat_template(inputs, continue_final_message);
 }
 
 bool Qwen3_IT::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
@@ -346,7 +339,7 @@ bool Qwen3_IT::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, st
         return false;
     }
     if (!input.messages.empty()) { // already a formated messages, usually from REST API
-        templated_text = this->apply_chat_template(input.messages, input.tools);
+        templated_text = this->apply_chat_template(input.messages, input.tools, meta_info.continue_final_message);
     }
     else if (!input.prompt.empty()) { // a pure text, usually from the cli
         nlohmann::ordered_json messages;
@@ -360,6 +353,11 @@ bool Qwen3_IT::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, st
     this->profiler_list[TKOEN_ENCODE_TIME].stop(tokens.size());
     // hardware
 
+    // The generation prompt ("<|im_start|>assistant\n") is how the next turn renders this reply's header: save the whole prompt.
+    if (this->_prefix_slot_mode(meta_info, tokens.size(), 0)) {
+        return this->_prefix_text_insert(meta_info, tokens, 0, "<|im_start|>user", is_cancelled);
+    }
+    this->_prefix_legacy_path();
     return this->_shared_insert(meta_info, tokens, is_cancelled);
 }
 
@@ -374,128 +372,11 @@ std::string Qwen3_IT::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifo
     return this->_shared_generate(meta_info, length_limit, os);
 }
 
-// Non-stream
-NonStreamResult Qwen3_IT::parse_nstream_content(const std::string response_text) {
-    NonStreamResult result;
-
-    std::string name, arguments;
-
-    std::string start_tag = "<tool_call>";
-    std::string end_tag = "</tool_call>";
-
-    size_t start_pos = response_text.find(start_tag);
-    size_t end_pos = response_text.find(end_tag);
-
-    if (start_pos == std::string::npos || end_pos == std::string::npos) {
-        // pure content
-        result.content = response_text;
-        return result;
-    }
-
-    start_pos += start_tag.length();
-    std::string json_str = response_text.substr(start_pos, end_pos - start_pos);
-
-    // Parse "name" 
-    std::string key_name = "\"name\": \"";
-    size_t name_start = json_str.find(key_name);
-    if (name_start != std::string::npos) {
-        name_start += key_name.length();
-        size_t name_end = json_str.find("\"", name_start);
-        if (name_end != std::string::npos) {
-            name = json_str.substr(name_start, name_end - name_start);
-        }
-    }
-
-    // Parse "arguments"
-    std::string key_args = "\"arguments\":";
-    size_t args_pos = json_str.find(key_args);
-    if (args_pos != std::string::npos) {
-        size_t brace_start = json_str.find("{", args_pos);
-        size_t brace_end = json_str.rfind("}"); // Find the last closing brace
-
-        if (brace_start != std::string::npos && brace_end != std::string::npos && brace_end > brace_start) {
-            arguments = json_str.substr(brace_start, brace_end - brace_start);
-        }
-    }
-
-    result.tool_name = name;
-    result.tool_args = arguments;
-
-    return result;
-}
-
-// Stream
-StreamResult Qwen3_IT::parse_stream_content(const std::string content) {
-    std::string tool_start_tag = "<tool_call>";
-    std::string tool_end_tag = "</tool_call>";
-
-    StreamResult result;
-    result.type = StreamEventType::CONTENT; 
-
-    if (content.find(tool_start_tag) != std::string::npos) {
-        is_in_tool_block_ = true;
-        tool_name_.clear();
-        result.type = StreamEventType::WAITING;
-        return result;
-    }
-
-    if (content.find("</tool_call>") != std::string::npos) {
-        is_in_tool_block_ = false;
-
-        try {
-            auto j = nlohmann::json::parse(tool_name_);
-
-            result.type = StreamEventType::TOOL_DONE;
-            //result.tool_id = generate_id();
-            result.tool_id = "call_" + std::to_string(std::time(nullptr));
-
-            if (j.contains("name")) {
-                result.tool_name = j["name"].get<std::string>();
-            }
-
-            if (j.contains("arguments")) {
-                if (j["arguments"].is_string()) {
-                    result.tool_args_str = j["arguments"].get<std::string>();
-                }
-                else {
-                    result.tool_args_str = j["arguments"].dump();
-                }
-            }
-        }
-        catch (...) {
-            result.type = StreamEventType::CONTENT;
-            result.content = "[Error parsing tool call]";
-        }
-        return result;
-    }
-
-    if (is_in_tool_block_) {
-        tool_name_ += content;
-        result.type = StreamEventType::WAITING; 
-        return result;
-    }
-
-    result.content = content;
-    return result;
-
-}
-
 /************              Qwen3_TK family            **************/
-Qwen3_TK::Qwen3_TK(xrt::device* npu_device_inst) : AutoModel(npu_device_inst) {}
+Qwen3_TK::Qwen3_TK(flm_rt::device* npu_device_inst) : AutoModel(npu_device_inst) {}
 
-void Qwen3_TK::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption) {
-    this->_shared_load_model(model_path, model_info, default_context_length, enable_preemption);
-    
-    this->q4nx = std::make_unique<Q4NX>(this->model_path);
-
-    // lm_config->model_type == qwen3
-    this->lm_engine = std::make_unique<qwen3_npu>(*this->lm_config, this->npu.get(), this->MAX_L);
-
-    this->lm_engine->load_weights(*this->q4nx);
-
-    //free the q4nx
-    this->q4nx.reset();
-    this->lm_engine->clear_context();
+void Qwen3_TK::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption, const std::string& backend) {
+    this->_shared_load_backend(model_path, model_info, default_context_length, enable_preemption, backend);
     this->setup_tokenizer(model_path);
     this->sampler.reset();
 
@@ -509,6 +390,7 @@ void Qwen3_TK::load_model(std::string model_path, json model_info, int default_c
     for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
         this->profiler_list[i].reset();
     }
+    this->_prefix_attach(this->lm_engine, qwen3_npu_state_api(this->lm_engine));
 }
 
 void Qwen3_TK::setup_tokenizer(std::string model_path) {
@@ -516,13 +398,12 @@ void Qwen3_TK::setup_tokenizer(std::string model_path) {
     this->think_marker_id = this->tokenizer->encode("<think>")[0];
 }
 
-std::string Qwen3_TK::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools) {
+std::string Qwen3_TK::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools, bool continue_final_message) {
     minja::chat_template_inputs inputs;
-    inputs.add_generation_prompt = true;
     inputs.messages = messages;
     inputs.extra_context = this->extra_context;
     inputs.tools = tools;
-    return this->chat_tmpl->apply(inputs);
+    return this->_render_chat_template(inputs, continue_final_message);
 }
 
 bool Qwen3_TK::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
@@ -534,7 +415,7 @@ bool Qwen3_TK::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, st
         return false;
     }
     if (!input.messages.empty()) { // already a formated messages, usually from REST API
-        templated_text = this->apply_chat_template(input.messages, input.tools);
+        templated_text = this->apply_chat_template(input.messages, input.tools, meta_info.continue_final_message);
     }
     else if (!input.prompt.empty()) { // a pure text, usually from the cli
         nlohmann::ordered_json messages;
@@ -548,7 +429,15 @@ bool Qwen3_TK::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, st
 
     // hardware
     int restore_idx = -1;
-    qwen3_npu *qwen3_engine = dynamic_cast<qwen3_npu*>(this->lm_engine.get());
+    qwen3_npu *qwen3_engine = dynamic_cast<qwen3_npu*>(this->lm_engine);
+
+    // Prefix slots. The two tokens left out ("<think>\n") are fed by generate(); the next turn does not render them.
+    // A continued message keeps all its tokens: they are the client's text, not the generation prompt.
+    const size_t trim_tokens = meta_info.continue_final_message ? 0 : 2;
+    if (this->_prefix_slot_mode(meta_info, tokens.size(), trim_tokens)) {
+        return this->_prefix_text_insert(meta_info, tokens, trim_tokens, "<|im_start|>user", is_cancelled);
+    }
+    this->_prefix_legacy_path();
 
     if (meta_info.restore_allowed) {
         restore_idx = qwen3_engine->restore();
@@ -557,7 +446,7 @@ bool Qwen3_TK::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, st
     }
 
     size_t n = tokens.size();
-    tokens.resize(n - 2);
+    tokens.resize(n - trim_tokens);
 
     bool success = this->_shared_insert(meta_info, tokens, is_cancelled, nullptr);
 
@@ -583,47 +472,90 @@ std::string Qwen3_TK::generate(chat_meta_info_t& meta_info, int length_limit, st
     this->profiler_list[TKOEN_DECODE_TIME].reset();
 
     std::string token_str;
-    int sampled_token;
+    int last_sampled_token;
 
-    this->token_history.push_back(think_start_id);
-    this->profiler_list[DECODING_TIME].start();
-    this->lm_engine->forward(think_start_id);
-    this->profiler_list[DECODING_TIME].stop(1);
-    token_str = this->tokenizer->run_time_decoder(think_start_id);
-    result += token_str;
-    os << token_str << std::flush;
+    if (!meta_info.continue_final_message) {
+        int sampled_token;
 
-    // \n
-    this->token_history.push_back(198);
-    this->profiler_list[DECODING_TIME].start();
-    buffer<bf16> y = this->lm_engine->forward(198);
-    this->profiler_list[DECODING_TIME].stop(1);
-    token_str = this->tokenizer->run_time_decoder(198);
-    result += token_str;
-    sampled_token = this->sampler->sample(y);
-    os << token_str << std::flush;
+        // The two forwards below write rows total_tokens and total_tokens+1, so
+        // the prompt has to leave room for them: past the engine's KV window
+        // they corrupt it for every later request.
+        if (this->total_tokens + 2 > this->MAX_L) {
+            header_print("WARNING", "Max length reached, stopping generation...");
+            meta_info.stop_reason = MAX_LENGTH_REACHED;
+            return result;
+        }
+        this->token_history.push_back(think_start_id);
+        this->profiler_list[DECODING_TIME].start();
+        this->_force_token(meta_info, think_start_id);
+        this->lm_engine->forward(think_start_id);
+        this->profiler_list[DECODING_TIME].stop(1);
+        token_str = this->tokenizer->run_time_decoder(think_start_id);
+        result += token_str;
+        os << token_str << std::flush;
 
-    this->total_tokens++;
-    meta_info.generated_tokens++;
-    int last_sampled_token = sampled_token;
-    token_str = this->tokenizer->run_time_decoder(last_sampled_token);
-    result += token_str;
-    os << token_str << std::flush;
+        // \n
+        this->token_history.push_back(198);
+        this->profiler_list[DECODING_TIME].start();
+        this->_force_token(meta_info, 198);
+        buffer<bf16> y = this->lm_engine->forward(198);
+        this->profiler_list[DECODING_TIME].stop(1);
+        token_str = this->tokenizer->run_time_decoder(198);
+        result += token_str;
+        sampled_token = this->_sample(y, meta_info);
+        os << token_str << std::flush;
+
+        // both went through the engine, so both occupy the context
+        this->total_tokens += 2;
+        meta_info.generated_tokens++;
+        last_sampled_token = sampled_token;
+        // the loop forwards it like insert()'s sample, so history carries it too
+        this->token_history.push_back(last_sampled_token);
+        if (this->is_normal_token(last_sampled_token)) {
+            token_str = this->tokenizer->run_time_decoder(last_sampled_token);
+            result += token_str;
+            os << token_str << std::flush;
+        }
+        if (this->is_eos(last_sampled_token)) {
+            // the reply ended before it started; no engine has run the eos
+            this->token_history.pop_back();
+            meta_info.stop_reason = reason;
+            return result;
+        }
+    }
+    else {
+        // A continued message trimmed nothing, so it starts from insert()'s sample.
+        last_sampled_token = this->last_token;
+        this->token_history.push_back(this->last_token);
+        // the sample insert() took is the reply's first token, and counts toward the limit
+        meta_info.generated_tokens++;
+        if (this->is_normal_token(last_sampled_token) && last_sampled_token != -1){
+            token_str = this->tokenizer->run_time_decoder(last_sampled_token);
+            result += token_str;
+            os << token_str << std::flush;
+        }
+        if (this->is_eos(last_sampled_token)){
+            // Sampled from the prefill, so no engine has run it.
+            this->token_history.pop_back();
+            meta_info.stop_reason = reason;
+            return result;
+        }
+    }
 
 
     if (this->total_tokens >= this->MAX_L){
-        header_print("WARNING", "Max length reached, stopping generation...");
         reason = MAX_LENGTH_REACHED;
-        return result;
     }
-    while (this->total_tokens < this->MAX_L){
+    else if ((length_limit > 0) && (meta_info.generated_tokens >= length_limit)){
+        reason = MAX_LENGTH_REACHED;
+    }
+    else while (true){
+        if (this->total_tokens >= this->MAX_L){
+            reason = MAX_LENGTH_REACHED;
+            break;
+        }
         if (is_cancelled()) {
             reason = CANCEL_DETECTED;
-            // reset stream content 
-            buffer_.clear();
-            current_mode_ = StreamEventType::CONTENT;
-            tool_name_.clear();
-            is_in_tool_block_ = false;
             break;
         }
         this->profiler_list[DECODING_TIME].start();
@@ -631,7 +563,7 @@ std::string Qwen3_TK::generate(chat_meta_info_t& meta_info, int length_limit, st
         this->profiler_list[DECODING_TIME].stop(1);
 
         this->profiler_list[SAMPLING_TIME].start();
-        int sampled_token = this->sampler->sample(y);
+        int sampled_token = this->_sample(y, meta_info);
         this->profiler_list[SAMPLING_TIME].stop(1);
         this->total_tokens++;
         last_sampled_token = sampled_token;
@@ -646,7 +578,14 @@ std::string Qwen3_TK::generate(chat_meta_info_t& meta_info, int length_limit, st
         this->token_history.push_back(sampled_token);
         if (this->is_eos(sampled_token)){
             meta_info.generated_tokens++;
-            this->lm_engine->forward(last_sampled_token);
+            // Its row is past the end of the engine's KV window once the context is
+            // full: forwarding it there corrupts the engine for every later request,
+            // so the next prompt has to carry it instead.
+            if (this->total_tokens < this->MAX_L) {
+                this->lm_engine->forward(last_sampled_token);
+            } else {
+                this->token_history.pop_back();
+            }
             break;
         }
         meta_info.generated_tokens++;
@@ -657,6 +596,11 @@ std::string Qwen3_TK::generate(chat_meta_info_t& meta_info, int length_limit, st
     }
     meta_info.decoding_duration = (uint64_t)(time_utils::cast_to_us(this->profiler_list[DECODING_TIME].get_total_time()).first) * 1e3;
     meta_info.stop_reason = reason;
+    if (reason != EOT_DETECTED) {
+        // Cut short after sampling its last token: no engine has run that one,
+        // so the next prompt has to carry it.
+        this->token_history.pop_back();
+    }
     if (this->total_tokens >= this->MAX_L){
         header_print("WARNING", "Max length reached, stopping generation...");
     }
@@ -672,91 +616,11 @@ std::string Qwen3_TK::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifo
     return this->generate(meta_info, length_limit, os);
 }
 
-NonStreamResult Qwen3_TK::parse_nstream_content(const std::string response_text) {
-    NonStreamResult result;
-
-    std::string name, arguments;
-    std::string content, reasoning_content;
-
-    std::string think_start_tag = "<think>";
-    std::string think_end_tag = "</think>";
-    std::string tool_start_tag = "<tool_call>";
-    std::string tool_end_tag = "</tool_call>";
-
-    size_t think_start_pos = response_text.find(think_start_tag);
-    size_t think_end_pos = response_text.find(think_end_tag);
-    size_t tool_start_pos = response_text.find(tool_start_tag);
-    size_t tool_end_pos = response_text.find(tool_end_tag);
-
-    bool is_reasoning = !(think_start_pos == std::string::npos || think_end_pos == std::string::npos);
-    bool is_tool = !(tool_start_pos == std::string::npos || tool_end_pos == std::string::npos);
-    bool is_content = !is_tool;
-
-    if (is_reasoning) {
-        // Find reasoning part
-        think_start_pos += think_start_tag.length();
-        std::string reasoning_str = response_text.substr(think_start_pos, think_end_pos - think_start_pos);
-        result.reasoning_content = reasoning_str;
-    }
-
-    if (is_tool) {
-        // Find tool calling part
-        tool_start_pos += tool_start_tag.length();
-        std::string json_str = response_text.substr(tool_start_pos, tool_end_pos - tool_start_pos);
-        // Parse "name" 
-        std::string key_name = "\"name\": \"";
-        size_t name_start = json_str.find(key_name);
-        if (name_start != std::string::npos) {
-            name_start += key_name.length();
-            size_t name_end = json_str.find("\"", name_start);
-            if (name_end != std::string::npos) {
-                name = json_str.substr(name_start, name_end - name_start);
-            }
-        }
-        // Parse "arguments"
-        std::string key_args = "\"arguments\":";
-        size_t args_pos = json_str.find(key_args);
-        if (args_pos != std::string::npos) {
-            size_t brace_start = json_str.find("{", args_pos);
-            size_t brace_end = json_str.rfind("}"); // Find the last closing brace
-
-            if (brace_start != std::string::npos && brace_end != std::string::npos && brace_end > brace_start) {
-                arguments = json_str.substr(brace_start, brace_end - brace_start);
-            }
-        }
-
-        result.tool_name = name;
-        result.tool_args = arguments;
-
-    }
-    else if (is_content) {
-        std::string content_str = response_text.substr(think_end_pos + think_end_tag.length());
-        result.content = content_str;
-    }
-
-    return result;
-}
-
-
-StreamResult Qwen3_TK::parse_stream_content(const std::string content) {
-    return _shared_think_tool_calling_pasrsed(content);
-}
-
 /************              DeepSeek_r1_0528_8b family            **************/
-DeepSeek_r1_0528_8b::DeepSeek_r1_0528_8b(xrt::device* npu_device_inst) : AutoModel(npu_device_inst) {}
+DeepSeek_r1_0528_8b::DeepSeek_r1_0528_8b(flm_rt::device* npu_device_inst) : AutoModel(npu_device_inst) {}
 
-void DeepSeek_r1_0528_8b::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption) {
-    this->_shared_load_model(model_path, model_info, default_context_length, enable_preemption);
-    
-    this->q4nx = std::make_unique<Q4NX>(this->model_path);
-    // model_type == llama
-    this->lm_engine = std::make_unique<qwen3_npu>(*this->lm_config, this->npu.get(), this->MAX_L);
-
-    this->lm_engine->load_weights(*this->q4nx);
-
-    //free the q4nx
-    this->q4nx.reset();
-    this->lm_engine->clear_context();
+void DeepSeek_r1_0528_8b::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption, const std::string& backend) {
+    this->_shared_load_backend(model_path, model_info, default_context_length, enable_preemption, backend);
     this->setup_tokenizer(model_path);
     this->sampler.reset();
 
@@ -772,18 +636,18 @@ void DeepSeek_r1_0528_8b::load_model(std::string model_path, json model_info, in
     for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
         this->profiler_list[i].reset();
     }
+    this->_prefix_attach(this->lm_engine, qwen3_npu_state_api(this->lm_engine));
 }
 
 void DeepSeek_r1_0528_8b::setup_tokenizer(std::string model_path) {
     auto tokenizer_config = this->_shared_setup_tokenizer(model_path);
 }
 
-std::string DeepSeek_r1_0528_8b::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools) {
+std::string DeepSeek_r1_0528_8b::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools, bool continue_final_message) {
     minja::chat_template_inputs inputs;
-    inputs.add_generation_prompt = true;
     inputs.messages = messages;
     inputs.extra_context = this->extra_context;
-    return this->chat_tmpl->apply(inputs);
+    return this->_render_chat_template(inputs, continue_final_message);
 }
 
 bool DeepSeek_r1_0528_8b::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
@@ -795,7 +659,7 @@ bool DeepSeek_r1_0528_8b::insert(chat_meta_info_t& meta_info, lm_uniform_input_t
         return false;
     }
     if (!input.messages.empty()) { // already a formated messages, usually from REST API
-        templated_text = this->apply_chat_template(input.messages);
+        templated_text = this->apply_chat_template(input.messages, nlohmann::ordered_json::object(), meta_info.continue_final_message);
     }
     else if (!input.prompt.empty()) { // a pure text, usually from the cli
         nlohmann::ordered_json messages;
@@ -810,7 +674,13 @@ bool DeepSeek_r1_0528_8b::insert(chat_meta_info_t& meta_info, lm_uniform_input_t
 
     // hardware
     int restore_idx = -1;
-    qwen3_npu *qwen3_engine = dynamic_cast<qwen3_npu*>(this->lm_engine.get());
+    qwen3_npu *qwen3_engine = dynamic_cast<qwen3_npu*>(this->lm_engine);
+
+    // A user turn ends with "<｜Assistant｜>" and the next turn continues with the reply, so the whole prompt can be saved (trim 0).
+    if (this->_prefix_slot_mode(meta_info, tokens.size(), 0)) {
+        return this->_prefix_text_insert(meta_info, tokens, 0, "<｜User｜>", is_cancelled);
+    }
+    this->_prefix_legacy_path();
     if (meta_info.restore_allowed) {
         restore_idx = qwen3_engine->restore();
         this->total_tokens = restore_idx;
@@ -839,6 +709,8 @@ std::string DeepSeek_r1_0528_8b::generate(chat_meta_info_t& meta_info, int lengt
     int last_sampled_token = this->last_token;
 
     token_history.push_back(this->last_token);
+    // the sample insert() took is the reply's first token, and counts toward the limit
+    meta_info.generated_tokens++;
     if (this->is_normal_token(last_sampled_token) && last_sampled_token != -1){
         std::string token_str = this->tokenizer->run_time_decoder(last_sampled_token);
         result += token_str;
@@ -846,23 +718,26 @@ std::string DeepSeek_r1_0528_8b::generate(chat_meta_info_t& meta_info, int lengt
 
     }
     if (this->is_eos(last_sampled_token)){
+        // Sampled from the prefill, so no engine has run it.
+        token_history.pop_back();
+        meta_info.stop_reason = reason;
         return result;
     }
     this->profiler_list[DECODING_TIME].reset();
     this->profiler_list[TKOEN_DECODE_TIME].reset();
     if (this->total_tokens >= this->MAX_L){
-        header_print("WARNING", "Max length reached, stopping generation...");
         reason = MAX_LENGTH_REACHED;
-        return result;
     }
-    while (this->total_tokens < this->MAX_L){
+    else if ((length_limit > 0) && (meta_info.generated_tokens >= length_limit)){
+        reason = MAX_LENGTH_REACHED;
+    }
+    else while (true){
+        if (this->total_tokens >= this->MAX_L){
+            reason = MAX_LENGTH_REACHED;
+            break;
+        }
         if (is_cancelled()) {
             reason = CANCEL_DETECTED;
-            // reset stream content 
-            buffer_.clear();
-            current_mode_ = StreamEventType::CONTENT;
-            tool_name_.clear();
-            is_in_tool_block_ = false;
             break;
         }
         this->profiler_list[DECODING_TIME].start();
@@ -870,7 +745,7 @@ std::string DeepSeek_r1_0528_8b::generate(chat_meta_info_t& meta_info, int lengt
         this->profiler_list[DECODING_TIME].stop(1);
 
         this->profiler_list[SAMPLING_TIME].start();
-        int sampled_token = this->sampler->sample(y);
+        int sampled_token = this->_sample(y, meta_info);
         this->profiler_list[SAMPLING_TIME].stop(1);
         this->total_tokens++;
         last_sampled_token = sampled_token;
@@ -885,7 +760,14 @@ std::string DeepSeek_r1_0528_8b::generate(chat_meta_info_t& meta_info, int lengt
         token_history.push_back(sampled_token);
         if (this->is_eos(sampled_token)){
             meta_info.generated_tokens++;
-            this->lm_engine->forward(last_sampled_token);
+            // Its row is past the end of the engine's KV window once the context is
+            // full: forwarding it there corrupts the engine for every later request,
+            // so the next prompt has to carry it instead.
+            if (this->total_tokens < this->MAX_L) {
+                this->lm_engine->forward(last_sampled_token);
+            } else {
+                this->token_history.pop_back();
+            }
             break;
         }
         meta_info.generated_tokens++;
@@ -896,6 +778,11 @@ std::string DeepSeek_r1_0528_8b::generate(chat_meta_info_t& meta_info, int lengt
     }
     meta_info.decoding_duration = (uint64_t)(time_utils::cast_to_us(this->profiler_list[DECODING_TIME].get_total_time()).first) * 1e3;
     meta_info.stop_reason = reason;
+    if (reason != EOT_DETECTED) {
+        // Cut short after sampling its last token: no engine has run that one,
+        // so the next prompt has to carry it.
+        token_history.pop_back();
+    }
     if (this->total_tokens >= this->MAX_L){
         header_print("WARNING", "Max length reached, stopping generation...");
     }
@@ -909,76 +796,4 @@ std::string DeepSeek_r1_0528_8b::generate_with_prompt(chat_meta_info_t& meta_inf
         return "";
     }
     return this->_shared_generate(meta_info, length_limit, os);
-}
-
-NonStreamResult DeepSeek_r1_0528_8b::parse_nstream_content(const std::string response_text) {
-    NonStreamResult result;
-
-    std::string content, reasoning_content;
-
-    std::string think_start_tag = "<think>";
-    std::string think_end_tag = "</think>";
-
-    size_t think_start_pos = response_text.find(think_start_tag);
-    size_t think_end_pos = response_text.find(think_end_tag);
-
-
-    think_start_pos += think_start_tag.length();
-    std::string reasoning_str = response_text.substr(think_start_pos, think_end_pos - think_start_pos);
-    result.reasoning_content = reasoning_str;
-
-    std::string content_str = response_text.substr(think_end_pos + think_end_tag.length());
-    result.content = content_str;
-
-    return result;
-}
-
-
-StreamResult DeepSeek_r1_0528_8b::parse_stream_content(const std::string content) {
-    const std::string MARKER_THINK_START = "<think>";
-    const std::string MARKER_THINK_END = "</think>";
-
-    StreamResult result;
-    buffer_ += content;
-
-    while (true) {
-        if (current_mode_ == StreamEventType::CONTENT) {
-            // Check for the start of a thought block
-            size_t pos = buffer_.find(MARKER_THINK_START);
-
-            if (pos != std::string::npos) {
-                // Emit content before the tag
-                result.content += buffer_.substr(0, pos);
-                result.type = StreamEventType::CONTENT;
-
-                // Remove "<think>\n" and switch mode
-                buffer_ = buffer_.substr(pos + MARKER_THINK_START.length());
-                current_mode_ = StreamEventType::REASONING;
-                continue;
-            }
-        }
-        else if (current_mode_ == StreamEventType::REASONING) {
-            // Check for the end of a thought block
-            size_t pos = buffer_.find(MARKER_THINK_END);
-
-            if (pos != std::string::npos) {
-                // Emit content before the tag
-                result.content += buffer_.substr(0, pos);
-                result.type = StreamEventType::REASONING;
-
-                // Remove "</think>\n" and switch mode
-                buffer_ = buffer_.substr(pos + MARKER_THINK_END.length());
-                current_mode_ = StreamEventType::CONTENT;
-                continue;
-            }
-        }
-
-        // Flush remaining buffer
-        result.content += buffer_;
-        result.type = current_mode_;
-        buffer_.clear();
-        break;
-    }
-
-    return result;
 }

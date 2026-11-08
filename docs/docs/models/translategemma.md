@@ -1,7 +1,7 @@
 ---
 layout: docs
 title: TranslateGemma
-nav_order: 11
+nav_order: 12
 parent: Models
 ---
 
@@ -10,6 +10,7 @@ parent: Models
 - **Type:** Image-Text-to-Text
 - **Think:** No
 - **Tool Calling Support:** No  
+- **Prefix cache (server mode):** Yes; Gemma 3 puts the system prompt in the first user turn, so each conversation reuses its own earlier turns (see [Prefix Cache (Prompt Reuse)](https://fastflowlm.com/docs/instructions/server/prefix_cache/))
 - **Base Model:** [google/translategemma-4b-it](https://huggingface.co/google/translategemma-4b-it)
 - **Quantization:** Q4_1
 - **Max Context Length:** 128k tokens 
@@ -38,5 +39,5 @@ TranslateGemma expects a single **user message** with this structure:
 
 🦙Refer to the Ollama model library for detailed usage [examples](https://ollama.com/library/translategemma#:~:text=text%20to%20translate.-,Examples,-English%20to%20Spanish).
 
-- [Reaseach Blog](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/)
+- [Research Blog](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/)
 - [Technical Report](https://arxiv.org/pdf/2601.09012)

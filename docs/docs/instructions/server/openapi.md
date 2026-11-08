@@ -17,8 +17,13 @@ parent: Local Server (Server Mode)
   - [Example: Use a File as the Prompt](#-example-use-a-file-as-the-prompt)
   - [Example: Batch Requests (Multiple Prompts)](#-example-batch-requests-multiple-prompts)
   - [Example: Use Temperature, Top-p, and Presence Penalty](#-example-use-temperature-top-p-and-presence-penalty)
+  - [Example: Token Log Probabilities](#-example-token-log-probabilities)
+  - [Example: Score the Next Token After a Partial Answer](#-example-score-the-next-token-after-a-partial-answer)
   - [Example: Multi-Image Input](#-example-multi-image-input)   
   - [Example: Multi-Modal Input](#️-example-multi-modal-input)   
+  - [Example: Flash Models (Single-Turn, Pinned System Prompt)](#-example-flash-models-single-turn-pinned-system-prompt)   
+
+> 📘 **Related pages:** [Tool Calling](https://fastflowlm.com/docs/instructions/server/tool_calling/) · [Reasoning, Tool Calls & Streaming](https://fastflowlm.com/docs/instructions/server/reasoning_and_tools/) (`reasoning_content`, streamed tool call deltas, the `think` switch) · [Structured Output & tool_choice](https://fastflowlm.com/docs/instructions/server/structured_output/) (`tool_choice`, `parallel_tool_calls`, `response_format` JSON / JSON schema) · [Request Parameters & Long Prompts](https://fastflowlm.com/docs/instructions/server/request_parameters/) (sampling fields, `seed`, unknown fields, prefill chunking)
 
 ---
 
@@ -204,15 +209,31 @@ del stream, client
 gc.collect()
 ```
 
+As with OpenAI, a stream reports no token usage unless you ask for it with `stream_options={"include_usage": True}` (`stream_usage=True` in LangChain). Then every chunk carries `usage: null`, and one last chunk before `data: [DONE]` has an empty `choices` list and the usage of the whole request. On `/v1/chat/completions` that usage also includes FLM's timing and KV cache figures (`prefill_speed_tps`, `decoding_speed_tps`, `active_kv_tokens`, ...). Since that last chunk has no choices, guard `chunk.choices` before indexing it:
+
+```python
+stream = client.chat.completions.create(
+    model="llama3.2:1b",
+    messages=[{"role": "user", "content": "Hi!"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+    if chunk.usage:
+        print(f"\n{chunk.usage.prompt_tokens} prompt + {chunk.usage.completion_tokens} completion tokens")
+```
+
 ---
 
 ## 📄 Example: Use a File as the Prompt
 
 You can load a full `.txt` file as a prompt — useful for long documents or testing large context windows.
 
-👉 [Download the sample prompt](https://github.com/FastFlowLM/FastFlowLM/blob/main/assets/alice_in_wonderland.txt)  
+👉 [Download the sample prompt](https://github.com/ROCm/FastFlowLM/blob/main/assets/alice_in_wonderland.txt)  
 
-Download to Downloads folder. This contains over 38k token, thus may take longer to prompt. FastFlowLM supports full context length (32k–128k), making it ideal for processing long documents like this
+Download to Downloads folder. This contains over 38k tokens, so it may take longer to prompt. FastFlowLM supports full context length (32k–128k), making it ideal for processing long documents like this
 
 ```python
 # Use a text file to prompt
@@ -304,6 +325,74 @@ import gc
 gc.collect()
 ```
 
+> ⚠️ Sampling settings stay in effect for later requests that don't send them, until the model is reloaded; `seed` applies to its own request only. What each field does, `seed`, the penalty window and model defaults: [Request Parameters & Long Prompts](https://fastflowlm.com/docs/instructions/server/request_parameters/).
+
+---
+
+## 🎲 Example: Token Log Probabilities
+
+`/v1/chat/completions` returns per-token log probabilities as OpenAI does. Set `logprobs=True`, and `top_logprobs` (0–100) for the most likely alternatives at each position:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:52625/v1", api_key="flm")
+
+response = client.chat.completions.create(
+    model="llama3.2:1b",
+    messages=[{"role": "user", "content": "Say hello."}],
+    logprobs=True,
+    top_logprobs=2,
+)
+
+for t in response.choices[0].logprobs.content:
+    alternatives = ", ".join(f"{a.token!r} {a.logprob:.3f}" for a in t.top_logprobs)
+    print(f"{t.token!r:12} {t.logprob:8.4f}   [{alternatives}]")
+```
+
+Streaming works the same way: each content chunk carries `choices[0].logprobs.content` for the tokens in that chunk.
+
+- The log probabilities are the model's own distribution, before temperature, top-k/top-p, penalties, or the grammar from `tool_choice` / `response_format` are applied. Under a grammar, the chosen token can be one the model itself thought unlikely.
+- Only `content` has log probabilities. Tokens of `reasoning_content` and of tool calls are left out, and chunks that carry them have `logprobs: null`.
+- `bytes` is `null` for special tokens such as end-of-turn, which can appear among `top_logprobs`. A token that holds only part of a UTF-8 character is named by its bytes, for example `"bytes:\xe4\xbd"`.
+- On `qwen3.8-mtp` and `qwen3.8-dflash2`, tokens produced by speculative decoding take their log probabilities from the batched pass that checks the draft. That pass runs different kernels from one-token decoding, so the values can differ slightly from what the same model reports with speculation off.
+- `top_logprobs` without `logprobs=True`, or outside 0–100, gets HTTP 400.
+
+---
+
+## 🎯 Example: Score the Next Token After a Partial Answer
+
+> Available from FLM v1.0.11.
+
+To see how likely each answer is, end `messages` with the start of the assistant's reply and set `continue_final_message` (an `extra_body` field). The model continues that text instead of starting a new reply, and the first log probability entry is its distribution for the very next token:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:52625/v1", api_key="flm")
+
+response = client.chat.completions.create(
+    model="llama3.2:1b",
+    messages=[
+        {"role": "user", "content": "Is Paris the capital of France? Answer yes or no."},
+        {"role": "assistant", "content": "The answer is:"},
+    ],
+    max_tokens=1,
+    temperature=0,
+    logprobs=True,
+    top_logprobs=5,
+    extra_body={"continue_final_message": True},
+)
+
+for alt in response.choices[0].logprobs.content[0].top_logprobs:
+    print(f"{alt.token!r:10} {alt.logprob:8.4f}")
+```
+
+- The prompt goes through the model's own chat template, so the score is for the context the model is used to.
+- `content` is only the continuation, without your text, and keeps its whitespace as the model wrote it (`' Yes'`, not `'Yes'`).
+- Use a model with thinking off (`think: false`, or a non-reasoning model). A model that always reasons first reads your text as its reasoning, so its first token is not the answer.
+- Continuing works on every chat model except single-turn (flash) models and `gpt-oss`. What else is refused, and how the prompt is cut: [Continuing an Assistant Message](https://fastflowlm.com/docs/instructions/server/request_parameters/#-continuing-an-assistant-message-continue_final_message).
+
 ---
 
 ## 📷 Example: Multi-Image Input
@@ -357,7 +446,7 @@ gc.collect()
 
 ## 🎙️ Example: Multi-Modal Input
 
-Send an image and an audio file together with a text prompt to multimodal interface of `Gemma 4`.
+Send an image and an audio file together with a text prompt to the multimodal interface of `Gemma 4`.
 
 ```python
 import base64
@@ -415,3 +504,73 @@ gc.collect()
 ```
 
 ---
+
+## ⚡ Example: Flash Models (Single-Turn, Pinned System Prompt)
+
+**Flash** models — `gemma4e-flash:e2b`, `gemma4e-flash:e4b`, `nemotron3.5-bolt-dflash-flash:e4b`, `qwen3.5-flash:2b`, `qwen3vl-flash:4b`, and `hy-mt2-flash:1.8b` — trade context length for a much faster time-to-first-token. They are built for high-throughput, short, independent requests: classification, captioning, extraction, routing, translation.
+
+They are **single-turn**: every request starts from a clean KV state, so earlier turns are not carried over. The system prompt is the one exception — it is prefilled once and cached, so keep it fixed and vary only the user message (and, for vision models, the image).
+
+Below, the same system prompt is pinned across requests that each caption a **different** image. The system-prompt KV is prefilled once on the first request; every request after that reuses it, so only the new image and text need to be prefilled — expect noticeably lower latency from the second request onward.
+
+```python
+import time
+import base64
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:52625/v1",
+    api_key="dummykey",  # FLM runs locally; the key is not checked
+)
+
+# Keep everything fixed in the system prompt — it is prefilled once and
+# reused across requests. Vary only the user message and image.
+SYSTEM_PROMPT = "You are a concise assistant. Describe the image in one short sentence."
+
+image_paths = [
+    r"C:\Users\info\OneDrive\Desktop\FLM\image_test\image0.jpg",
+    r"C:\Users\info\OneDrive\Desktop\FLM\image_test\image1.png",
+]
+
+for path in image_paths:
+    with open(path, "rb") as image_file:
+        image = base64.b64encode(image_file.read()).decode("utf-8")
+
+    print(f"\n> {path}")
+    start = time.time()
+    stream = client.chat.completions.create(
+        model="qwen3vl-flash:4b",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},  # same every time — its KV is cached after the first call
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpg;base64,{image}"}},
+                ],
+            },
+        ],
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            print(delta, end="", flush=True)
+    print(f"\n[time to first response: {time.time() - start:.2f}s]")
+    # 1st image: pays the full system-prompt prefill cost.
+    # 2nd image onward: system-prompt KV is reused from cache — expect lower latency.
+
+# cleanup
+del stream, client
+import gc
+gc.collect()
+```
+
+> ⚠️ Do **not** append the reply to `messages` and send it back, as in the [multi-turn example](#-example-multi-turn-chat-conversation-history) — the history is discarded, and it only wastes your 1k budget.  
+> 🧠 Changing the system prompt discards the pinned prefix and re-prefills it. Alternating between two different system prompts defeats the optimization entirely.  
+> 📏 Context is **fixed at 1k tokens** for every flash model; context-length overrides are ignored.  
+> 🔧 **Tool calling is not supported** — any `tools` you pass are dropped.  
+> 🌐 `hy-mt2-flash` is text-only and has no default system prompt — pin your own translation instruction as the system prompt, or put it in the user message.  
+> 🖼️ `gemma4e-flash` and `nemotron3.5-bolt-dflash-flash` default to the smallest visual token budget (70) and keeps only the **first 30 seconds** of an audio clip. `qwen3vl-flash` always downscales images to a **256 px longer side**.  
+
+For the full per-model details, see the [`gemma4e-flash:e2b`](https://fastflowlm.com/docs/models/gemma/#-model-card-gemma-4-e2b-it--flash), [`gemma4e-flash:e4b`](https://fastflowlm.com/docs/models/gemma/#-model-card-gemma-4-e4b-it--flash), [`nemotron3.5-bolt-dflash-flash:e4b`](https://fastflowlm.com/docs/models/nemotron3.5-bolt-dflash/#-model-card-nvidia-nemotron-35-bolt-e4b--dflash-flash), [`qwen3vl-flash:4b`](https://fastflowlm.com/docs/models/qwen/#-model-card-qwen3-vl-4b-instruct--flash), and [`hy-mt2-flash:1.8b`](https://fastflowlm.com/docs/models/hy-mt2/) model cards. Performance numbers are on the [Flash benchmarks](https://fastflowlm.com/docs/benchmarks/flash_results/) page.

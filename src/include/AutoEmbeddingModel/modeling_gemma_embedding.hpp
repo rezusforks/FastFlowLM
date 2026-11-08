@@ -6,7 +6,7 @@
 /// \note This is a header file for the Gemma_Embedding class
 
 #include "auto_embedding_model.hpp"
-#include "models/gemma_embedding/gemma_embedding.hpp"
+#include "models/gemma_embedding/flm/aie2p/gemma_embedding.hpp"
 
 class Gemma_Embedding : public AutoEmbeddingModel{
 private:
@@ -52,7 +52,7 @@ private:
         }
     }
 public:
-    Gemma_Embedding(xrt::device* npu_device_inst);
+    Gemma_Embedding(flm_rt::device* npu_device_inst);
     ~Gemma_Embedding();
 
     void load_model(std::string model_path, json model_info, bool enable_preemption = false) override;

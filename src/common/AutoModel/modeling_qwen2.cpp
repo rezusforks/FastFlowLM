@@ -9,21 +9,10 @@
 #include "AutoModel/modeling_qwen2.hpp"
 
 /************              Qwen2 family            **************/
-Qwen2::Qwen2(xrt::device* npu_device_inst) : AutoModel(npu_device_inst) {}
+Qwen2::Qwen2(flm_rt::device* npu_device_inst) : AutoModel(npu_device_inst) {}
 
-void Qwen2::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption) {
-    this->_shared_load_model(model_path, model_info, default_context_length, enable_preemption);
-    
-    this->q4nx = std::make_unique<Q4NX>(this->model_path);
-
-    // lm_config->model_type == qwen2
-    this->lm_engine = std::make_unique<qwen2_npu>(*this->lm_config, this->npu.get(), this->MAX_L);
-
-    this->lm_engine->load_weights(*this->q4nx);
-
-    //free the q4nx
-    this->q4nx.reset();
-    this->lm_engine->clear_context();
+void Qwen2::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption, const std::string& backend) {
+    this->_shared_load_backend(model_path, model_info, default_context_length, enable_preemption, backend);
     this->setup_tokenizer(model_path);
     this->sampler.reset();
 
@@ -39,18 +28,18 @@ void Qwen2::load_model(std::string model_path, json model_info, int default_cont
     for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
         this->profiler_list[i].reset();
     }
+    this->_prefix_attach(this->lm_engine, qwen2_npu_state_api(this->lm_engine));
 }
 
 void Qwen2::setup_tokenizer(std::string model_path) {
     auto tokenizer_config = this->_shared_setup_tokenizer(model_path);
 }
 
-std::string Qwen2::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools) {
+std::string Qwen2::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools, bool continue_final_message) {
     minja::chat_template_inputs inputs;
-    inputs.add_generation_prompt = true;
     inputs.messages = messages;
     inputs.extra_context = this->extra_context;
-    return this->chat_tmpl->apply(inputs);
+    return this->_render_chat_template(inputs, continue_final_message);
 }
 
 bool Qwen2::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
@@ -62,7 +51,7 @@ bool Qwen2::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::
         return false;
     }
     if (!input.messages.empty()) { // already a formated messages, usually from REST API
-        templated_text = this->apply_chat_template(input.messages);
+        templated_text = this->apply_chat_template(input.messages, nlohmann::ordered_json::object(), meta_info.continue_final_message);
     }
     else if (!input.prompt.empty()) { // a pure text, usually from the cli
         nlohmann::ordered_json messages;
@@ -76,6 +65,11 @@ bool Qwen2::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::
     this->profiler_list[TKOEN_ENCODE_TIME].stop(tokens.size());
     // hardware
 
+    // The generation prompt ("<|im_start|>assistant\n") is how the next turn renders this reply's header: save the whole prompt.
+    if (this->_prefix_slot_mode(meta_info, tokens.size(), 0)) {
+        return this->_prefix_text_insert(meta_info, tokens, 0, "<|im_start|>user", is_cancelled);
+    }
+    this->_prefix_legacy_path();
     return this->_shared_insert(meta_info, tokens, is_cancelled);
 }
 

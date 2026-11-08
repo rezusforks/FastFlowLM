@@ -27,25 +27,49 @@ FLM can keep one NPU model loaded per type at a time:
 - `asr`
 - `llm`
 - `embedding`
+- `decision` (`--decision d3:lite`, the System One API; see [Decision model](#decision-model-system-one) below)
 
 Different model types can run together (for example, one LLM and one embedding model).
 
-### Load all three model types in one server process (default port)
+### Load several model types in one server process (default port)
 
 ```shell
-flm serve lfm2:1.2b -e 1 -a 1
+flm serve lfm2:1.2b -e embed-gemma:300m
+flm serve lfm2:1.2b -a whisper-v3:turbo
 ```
+
+Each loaded model holds NPU hardware contexts, and the driver allows only 16 per NPU device. An LLM together with **both** Whisper and the embedding model can exceed that limit, in which case the LLM fails to load (`DRM_IOCTL_AMDXDNA_CREATE_HWCTX IOCTL failed`). If that happens, load at most one of `-a` / `-e` next to the LLM, or use separate server processes as shown below.
+
+`-a` / `-e` take a model tag; `-a 1` / `-e 1` still select the default ASR (`whisper-v3:turbo`) / embedding (`embed-gemma:300m`) model.
 
 ### Run model types in separate server processes (different ports)
 
 ```shell
-flm serve -e 1 --port 52625
-flm serve -a 1 --port 52627
+flm serve -e embed-gemma:300m --port 52625
+flm serve -a whisper-v3:turbo --port 52627
 flm serve lfm2:1.2b --port 52628
 ```
 
 
 
+
+## Decision Model (System One)
+
+A decision model answers typed questions about a state (choices, yes / no, scores) with a probability for every
+option, over `POST /v1/systemone`; requests may carry images (base64 data URLs). It is served next to a chat model or
+on its own:
+
+```shell
+flm serve --decision d3:lite                 # decision model only
+flm serve qwen3.5:4b --decision d3:lite      # next to a chat model
+```
+
+`GET /v1/systemone/models` lists the loaded decision model with its input limit and modalities. Requests share the
+NPU with the chat model and run one at a time, so a decision waits for a chat completion that is already running; a
+second `flm serve` for the decision model does not avoid this (the two processes contend for the NPU). The decision
+model takes one NPU hardware context, two once a prompt of 1,536 tokens or more arrives, and two more on the first
+request with images; mind this when the chat model and others already use most of the device's 16. Request format, a smoke test and latency:
+[Decision 3.0 (d3)](https://fastflowlm.com/docs/models/d3/).
 
 ## Set Context Length at Launch
 

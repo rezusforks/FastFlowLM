@@ -1,5 +1,5 @@
 /*!
- *  Copyright (c) 2023 by Contributors
+ *  Copyright (c) 2026 Advanced Micro Devices, Inc.
  * \file main.cpp
  * \brief Main entry point for the FLM application
  * \author FastFlowLM Team
@@ -7,6 +7,7 @@
  *  \version 0.9.24
  */
 #pragma once
+#include <optional>
 #include "utils/utils.hpp"
 #include "nlohmann/json.hpp"
 #include "model_list.hpp"
@@ -44,12 +45,15 @@ typedef enum {
 /// \brief Runner class
 class Runner {
     public: 
-        Runner(model_list& supported_models, ModelDownloader& downloader, program_args_t& args);
+        Runner(model_list& supported_models, ModelDownloader& downloader, program_args_t& args,
+               flm_rt::device* npu_device);
         void run();
     private:
         std::string tag;
+        bool modelscope;
         int prefill_chunk_len;
         bool asr;
+        std::string asr_tag;
         bool asr_supported;
         bool embed;
         model_list supported_models;
@@ -63,10 +67,16 @@ class Runner {
         int ctx_length;
         std::string system_prompt;
         bool preemption;
+        /// \brief the --backend value, empty when the flag was not given
+        std::string backend;
         int img_pre_resize;
         // CLI instance for interactive input
         CLIWide cli;
-        xrt::device npu_device_inst;
+        // Non-RAI: Runner owns the device. RAI: main passes corelib's device.
+        flm_rt::device* npu_device_inst;
+        // Non-RAI path: Runner owns the device so constructor errors propagate
+        // to main()'s try-catch.
+        std::optional<flm_rt::device> owned_device;
 
         /// \brief Command functions
         void cmd_set(std::vector<std::string>& input_list);

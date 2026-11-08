@@ -18,11 +18,13 @@
 
 SOURCES += test.cpp
 SOURCES += ../../common/AutoModel/automodel.cpp
+SOURCES += $(CHAT_SOURCES)
 SOURCES += ../../common/AutoModel/modeling_qwen3vl.cpp
 SOURCES += ../../common/AutoModel/modeling_qwen3vl_image.cpp
 SOURCES += ../../common/image_process_utils/imageproc.cpp
 SOURCES += ../../common/image_process_utils/imageprocAVX512.cpp
 SOURCES += ../../common/image/image_reader.cpp
+SOURCES += ../../include/lodepng/lodepng.cpp
 SOURCES += ../../common/tokenizer/tokenizer.cpp
 SOURCES += ../../common/modules/sampler.cpp
 
@@ -33,27 +35,35 @@ HEADERS += ../../include/qwen3vl/qwen3vl_npu.hpp
 ifeq ($(WSL), 0)
 
 LDFLAGS += -lqwen3vl_npu
-LDFLAGS += -lavformat -lavcodec -lavutil -lswscale -lswresample
+# modeling_qwen3vl.cpp serves both wrappers, so both engines must be linked.
+LDFLAGS += -lqwen3vl_flash
+LDFLAGS += -ljpeg
 
-TEST_DEPS := $(test.cpp:.cpp=.d)
+CPP_SOURCES := $(filter %.cpp,$(SOURCES))
+OBJECTS := $(addprefix $(BUILD_DIR)/,$(notdir $(CPP_SOURCES:.cpp=.o)))
+DEPS := $(OBJECTS:.o=.d)
+VPATH := $(sort $(dir $(CPP_SOURCES)))
 
-all: directories $(BUILD_DIR)/test_qwen3vl_npu
+all: $(BUILD_DIR)/test_qwen3vl_npu
 
-directories:
+$(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/test_qwen3vl_npu: $(SOURCES) $(TEST_DEPS)
+$(BUILD_DIR)/%.o: %.cpp | $(BUILD_DIR)
+	$(CXX) $(CXX_FLAGS) -c $< -o $@
+
+$(BUILD_DIR)/test_qwen3vl_npu: $(OBJECTS)
 	$(CXX) $(CXX_FLAGS) -o $@ $^ $(LDFLAGS) $(DEPENDENCY_LDFLAGS)
 
 clean:
 	rm -rf $(BUILD_DIR)
 
-test: $(BUILD_DIR)/
+test: $(BUILD_DIR)/test_qwen3vl_npu
 	cp ../../model_list.json $(BUILD_DIR)/model_list.json
 	cd $(BUILD_DIR) && export LD_LIBRARY_PATH=../../../lib && ./test_qwen3vl_npu --model qwen3vl-it -s 1
 
--include $(TEST_DEPS)
-.PHONY: all clean test directories
+-include $(DEPS)
+.PHONY: all clean test
 
 else
 

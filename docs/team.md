@@ -17,7 +17,7 @@ sections:
         href: "mailto:info@fastflowlm.com"
         style: primary
       - label: "Join Discord"
-        href: "https://discord.gg/z24t23HsHF?utm_source=site"
+        href: "https://discord.com/invite/jtWZdMJ8ee?utm_source=site"
         style: ghost
         external: true
     right:
@@ -49,7 +49,7 @@ sections:
         role: "Co-Founder"
         image: "/assets/kenqingyang.png"
         bio: |
-          Distinguished Engineering Professor · University of Rhode Island. With more than 30 years of experience in computer architecture and parallel processing, he is a serial entrepreneur who has successfully built four high-tech startups rooted in his research innovations—including VeloBit (acquired by Western Digital) and DapuStor (currently in the IPO process). 
+          Distinguished Engineering Professor · University of Rhode Island. With more than 30 years of experience in computer architecture and parallel processing, he is a serial entrepreneur who has successfully built four high-tech startups rooted in his research innovations—including VeloBit (acquired by Western Digital) and DapuStor (recently IPOed). 
         links:
           - label: "URI profile"
             url: "https://web.uri.edu/ecbe/meet/qing-ken-yang/"
@@ -58,7 +58,7 @@ sections:
           - label: "DapuStor"
             url: "https://en.dapustor.com/"
       - name: "Zhenyu (Alfred) Xu"
-        role: "Co-founder"
+        role: "Co-Founder"
         image: "/assets/zhenyu.png"
         bio: |
           Research Assistant Professor · Clemson University. Focused on domain-specific accelerator design, reconfigurable computing, and efficient on-device AI inference.
@@ -85,7 +85,7 @@ sections:
           href: "mailto:info@fastflowlm.com"
           style: primary
         - label: "Open an issue"
-          href: "https://github.com/FastFlowLM/FastFlowLM/issues/new"
+          href: "https://github.com/ROCm/FastFlowLM/issues/new"
           style: ghost
           external: true
 ---

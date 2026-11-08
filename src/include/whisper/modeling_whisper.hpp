@@ -15,14 +15,6 @@
 #include "utils/profiler.hpp"
 #include "lm_config.hpp"
 #include "tensor_utils/q4_npu_eXpress.hpp"
-// FFmpeg includes for image processing only
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libswscale/swscale.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/frame.h>
-#include <libavutil/pixfmt.h>
-}
 
 #include <vector>
 #include "typedef.hpp"
@@ -31,7 +23,7 @@ extern "C" {
 #include <stdexcept>
 #include <iostream>
 #include <unordered_map>
-#include "fftw3.h"
+#include "audio_process_utils/rfft.hpp"
 #include <immintrin.h>  // For AVX intrinsics
 #include "metrices.hpp"
 #include "tokenizer/tokenizer.hpp"
@@ -42,32 +34,9 @@ class FFT400 {
 public:
     static constexpr int N = 400;
 
-    FFT400() {
-        // Allocate input and output arrays for FFTW
-        in = (float*)fftwf_malloc(N * sizeof(float));
-        out = (fftwf_complex*)fftwf_malloc((N/2 + 1) * sizeof(fftwf_complex));
-        
-        // Create FFTW plan for real-to-complex FFT
-        plan = fftwf_plan_dft_r2c_1d(N, in, out, FFTW_ESTIMATE);
-        
-        if (!plan) {
-            throw std::runtime_error("Failed to create FFTW plan");
-        }
-    }
+    FFT400() : out((N / 2 + 1) * 2) {}
 
-    ~FFT400() {
-        if (plan) {
-            fftwf_destroy_plan(plan);
-        }
-        if (in) {
-            fftwf_free(in);
-        }
-        if (out) {
-            fftwf_free(out);
-        }
-    }
-
-    // Delete copy constructor and assignment operator to prevent issues with FFTW plans
+    // Not copyable: compute_power() reuses the output buffer
     FFT400(const FFT400&) = delete;
     FFT400& operator=(const FFT400&) = delete;
 
@@ -76,19 +45,14 @@ public:
             throw std::runtime_error("FFT400 input must have 400 samples, got " + std::to_string(input.size()));
         }
 
-        // Copy input data to FFTW input array
-        for (int i = 0; i < N; ++i) {
-            in[i] = input[i];
-        }
-
-        // Execute FFT
-        fftwf_execute(plan);
+        // Execute FFT (interleaved re, im output)
+        audioproc::rfft_many(input.data(), out.data(), 1, N);
 
         // Extract power spectrum (magnitude squared)
         std::vector<float> power(N / 2 + 1);
         for (int k = 0; k <= N / 2; ++k) {
-            float real = out[k][0];
-            float imag = out[k][1];
+            float real = out[2 * k];
+            float imag = out[2 * k + 1];
             power[k] = real * real + imag * imag;
         }
 
@@ -96,9 +60,7 @@ public:
     }
 
 private:
-    float* in;
-    fftwf_complex* out;
-    fftwf_plan plan;
+    mutable std::vector<float> out;
 };
 
 /************              Whisper            **************/
@@ -108,11 +70,16 @@ private:
     static constexpr int FS = 16000;
     static constexpr int WINDOW_LENGTH = 30; // seconds
     static constexpr int WINDOW_SAMPLES = FS * WINDOW_LENGTH;
+    static constexpr int MAX_L = 448;
     static constexpr int start_of_transcript = 50258;
+    static constexpr int first_language_token = 50259;
+    static constexpr int last_language_token = 50358;
     static constexpr int start_of_prev_token = 50362;
     static constexpr int no_time_stamp_token = 50364;
     static constexpr int translate_token = 50359;
     static constexpr int transcribe_token = 50360;
+    static constexpr int eot_token = 50257;
+    static constexpr int max_initial_time_stamp = 50;  // <|1.00|>, as openai-whisper
     typedef enum {
         PREFILL_TIME,
         DECODING_TIME,
@@ -134,7 +101,7 @@ private:
     std::unique_ptr<whisper_npu> whisper_engine;
     std::unique_ptr<npu_xclbin_manager> npu;
 	std::unique_ptr<Whisper_Config> lm_config = nullptr;
-    xrt::device* device;
+    flm_rt::device* device;
 
     bool enable_preemption;
 
@@ -181,51 +148,15 @@ private:
     }
 
     int _sample_in_language(buffer<bf16>& logits);
+    int _language_token(const std::string& language);
 
     int _sample_in_time_stamp(buffer<bf16>& logits);
-
-    inline bool _is_valid_utf8(const std::string& input) {
-        size_t i = 0;
-        while (i < input.size()) {
-            unsigned char c = input[i];
-            size_t width;
-    
-            // --- Validate UTF-8 codepoint ---
-            if (c < 0x80) {
-                // Single byte ASCII character
-                width = 1;
-            }
-            else if ((c & 0xE0) == 0xC0) {
-                // 2-byte character
-                if (i + 1 >= input.size()) return false;
-                // Check that second byte is a valid continuation byte
-                if ((input[i+1] & 0xC0) != 0x80) return false;
-                width = 2;
-            }
-            else if ((c & 0xF0) == 0xE0) {
-                // 3-byte character
-                if (i + 2 >= input.size()) return false;
-                // Check that second and third bytes are valid continuation bytes
-                if ((input[i+1] & 0xC0) != 0x80 || (input[i+2] & 0xC0) != 0x80) return false;
-                width = 3;
-            }
-            else if ((c & 0xF8) == 0xF0) {
-                // 4-byte character
-                if (i + 3 >= input.size()) return false;
-                // Check that second, third, and fourth bytes are valid continuation bytes
-                if ((input[i+1] & 0xC0) != 0x80 || (input[i+2] & 0xC0) != 0x80 || (input[i+3] & 0xC0) != 0x80) return false;
-                width = 4;
-            }
-            else {
-                // Invalid UTF-8 byte
-                return false;
-            }
-    
-            i += width;
+    void _apply_time_stamp_rules(buffer<bf16>& logits, int prev_idx, int last_idx, int last_time_stamp_idx);
+    inline void _mask(buffer<bf16>& logits, int begin, int end){
+        for (int i = begin; i < end; i++){
+            logits[i] = -0x1.FEp127f;
         }
-        return true;
     }
-
 
     std::string _offset_time_stamp(std::string& time_stamp, float offset){
         float time;
@@ -241,12 +172,17 @@ public:
         e_transcribe = 1
     } whisper_task_type_t;
 
-    Whisper(xrt::device* npu_device_inst);
+    Whisper(flm_rt::device* npu_device_inst);
 
     void load_model(std::string model_path, nlohmann::ordered_json model_inf, bool enable_preemption = false);
     //void toggle_enable_think() override;
     bool load_audio(std::string& audio_path);
     bool load_audio(std::vector<uint8_t>& audio_data);
-    std::pair<std::string, std::string> generate(whisper_task_type_t task, bool enable_time_stamp, bool return_time_stamp, std::ostream& os);
+    /// \return the loaded audio's length in seconds
+    double audio_duration() const { return (double)this->audio_buffer.size() / FS; }
+    /// \param language ISO 639-1 code (e.g. "en"); empty to detect it per window
+    /// \param prompt text to condition the decoder on, as OpenAI's `prompt`
+    std::pair<std::string, std::string> generate(whisper_task_type_t task, bool enable_time_stamp, bool return_time_stamp, std::ostream& os,
+                                                 const std::string& language = "", const std::string& prompt = "");
     void setup_tokenizer(std::string model_path);
 };

@@ -1,5 +1,5 @@
 /*
-*  Copyright (c) 2025 by Contributors
+*  Copyright (c) 2026 Advanced Micro Devices, Inc.
 *  \file runner.cpp
 *  \brief Runner implementation for interactive model execution
 *  \author FastFlowLM Team
@@ -18,6 +18,8 @@
 #include <iomanip>
 #include <fstream>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 
 /// \brief Command map for command line input
 std::map<std::string, runner_cmd_t> cmd_map = {
@@ -36,10 +38,17 @@ std::map<std::string, runner_cmd_t> cmd_map = {
 /// \param supported_models - the list of supported models
 /// \param downloader - the downloader for the models
 /// \param tag - the tag of the model to load
-Runner::Runner(model_list& supported_models, ModelDownloader& downloader, program_args_t& args)
-    : supported_models(supported_models), downloader(downloader), tag(args.model_tag), asr(args.asr), embed(args.embed), img_pre_resize(args.img_pre_resize), preemption(args.preemption) {
+Runner::Runner(model_list& supported_models, ModelDownloader& downloader, program_args_t& args,
+               flm_rt::device* npu_device)
+    : supported_models(supported_models), downloader(downloader), tag(args.model_tag), modelscope(args.modelscope), asr(args.asr), asr_tag(args.asr_tag), embed(args.embed), img_pre_resize(args.img_pre_resize), preemption(args.preemption), backend(args.backend) {
 
-    this->npu_device_inst = xrt::device(0);
+    // RAI receives the device from corelib; non-RAI creates its own here.
+    if (npu_device != nullptr) {
+        npu_device_inst = npu_device;
+    } else {
+        owned_device = flm_rt::device(0);
+        npu_device_inst = &(*owned_device);
+    }
 
     if (args.ctx_length != -1) {
         this->ctx_length = args.ctx_length >= 512 ? args.ctx_length : 512;
@@ -51,20 +60,29 @@ Runner::Runner(model_list& supported_models, ModelDownloader& downloader, progra
     if (this->auto_chat_engine != nullptr) {
         this->auto_chat_engine.reset();
     }
-    std::pair<std::string, std::unique_ptr<AutoModel>> auto_model = get_auto_model(this->tag, this->supported_models, &this->npu_device_inst);
+    std::pair<std::string, std::unique_ptr<AutoModel>> auto_model = get_auto_model(this->tag, this->supported_models, this->npu_device_inst);
     this->auto_chat_engine = std::move(auto_model.second);
     
     this->tag = auto_model.first;
 
-    if (!this->downloader.is_model_downloaded(this->tag)) {
-        this->downloader.pull_model(this->tag);
+    switch (this->downloader.is_model_downloaded(this->tag, false, /*fast_check=*/true)) {
+        case ModelDownloader::ModelStatus::Ready:
+            break;
+        case ModelDownloader::ModelStatus::Outdated:
+        case ModelDownloader::ModelStatus::Missing:
+            this->downloader.pull_model(this->tag, this->modelscope);
+            break;
+        case ModelDownloader::ModelStatus::Incompatible:
+            exit(EXIT_FAILURE);
     }
     auto [new_tag, model_info] = this->supported_models.get_model_info(this->tag);
     this->asr_supported = model_info.contains("asr") && model_info["asr"];
     // header_print("ASR", asr_supported);
     this->auto_chat_engine->configure_parameter("img_pre_resize", this->img_pre_resize);
     try {
-        this->auto_chat_engine->load_model(this->supported_models.get_model_path(new_tag), model_info, this->ctx_length, this->preemption);
+        const auto load_started = std::chrono::steady_clock::now();
+        this->auto_chat_engine->load_model(this->supported_models.get_load_path(new_tag), model_info, this->ctx_length, this->preemption, this->backend);
+        report_load_time(load_started);
     }
     catch (const std::exception& e) {
         header_print("ERROR", "Failed to load model: " + std::string(e.what()));
@@ -87,7 +105,7 @@ Runner::Runner(model_list& supported_models, ModelDownloader& downloader, progra
 
 
     if (this->embed) {
-        header_print("Warning", "Embed model not supported in CLI; Use 'flm serve -e 1'");
+        header_print("Warning", "Embed model not supported in CLI; Use 'flm serve -e <model tag>'");
     }
 
     header_print("FLM", "Loading model: " << this->tag);
@@ -97,19 +115,27 @@ Runner::Runner(model_list& supported_models, ModelDownloader& downloader, progra
         // check if multi-modal model with ASR support is loaded, if not, load the default whisper model for ASR
         if (!asr_supported) 
         {
-            header_print("FLM", "The loaded model does not support ASR. Loading default Whisper model for ASR...");
-            std::string whisper_tag = "whisper-v3:turbo";
-            if (!this->downloader.is_model_downloaded(whisper_tag)) {
-                this->downloader.pull_model(whisper_tag);
+            header_print("FLM", "The loaded model does not support ASR. Loading ASR model " + this->asr_tag + "...");
+            std::string whisper_tag = this->asr_tag;
+            switch (this->downloader.is_model_downloaded(whisper_tag)) {
+                case ModelDownloader::ModelStatus::Ready:
+                    break;
+                case ModelDownloader::ModelStatus::Outdated:
+                case ModelDownloader::ModelStatus::Missing:
+                    this->downloader.pull_model(whisper_tag, this->modelscope);
+                    break;
+                case ModelDownloader::ModelStatus::Incompatible:
+                    header_print("ERROR", "Whisper is incompatible with this version of FastFlowLM, skipping... ");
+                    return;
             }
-            this->whisper_engine = std::make_unique<Whisper>(&this->npu_device_inst);
+            this->whisper_engine = std::make_unique<Whisper>(this->npu_device_inst);
             auto [new_whisper_tag, whisper_model_info] = this->supported_models.get_model_info(whisper_tag);
             std::string whisper_model_path = this->supported_models.get_model_path(new_whisper_tag);
             try {
                 this->whisper_engine->load_model(whisper_model_path, whisper_model_info, this->preemption);
             }
             catch (const std::exception& e) {
-                header_print("ERROR", "Failed to load ASR model: " + std::string(e.what()));
+                header_print("WARNING", "Failed to load ASR model: " + std::string(e.what()));
                 exit(EXIT_FAILURE);
             }
         }
@@ -204,13 +230,13 @@ void Runner::run() {
                 std::cout << "Models:" << std::endl;
                 nlohmann::json models = supported_models.get_all_models();
                 for (const auto& model : models["models"]) {
-                    bool is_present = downloader.is_model_downloaded(model["name"].get<std::string>());
-                    std::cout << "  - " << model["name"].get<std::string>();
-                    if (is_present){
-                        std::cout << " ✅";
-                    }
-                    else{
-                        std::cout << " ⏬";
+                    std::string name = model["name"].get<std::string>();
+                    std::cout << "  - " << name;
+                    switch (downloader.is_model_downloaded(name)) {
+                        case ModelDownloader::ModelStatus::Ready:        std::cout << " ✅"; break;
+                        case ModelDownloader::ModelStatus::Missing:      std::cout << " ⏬"; break;
+                        case ModelDownloader::ModelStatus::Outdated:     std::cout << " ⚠️"; break;
+                        case ModelDownloader::ModelStatus::Incompatible: std::cout << " ⚠️"; break;
                     }
                     std::cout << std::endl;
                 }
@@ -241,7 +267,7 @@ void Runner::run() {
             }
             else if (first_token == "/pull") {
                 std::string model_name = input_list[1];
-                this->downloader.pull_model(model_name);
+                this->downloader.pull_model(model_name, this->modelscope);
             }
         } else {
             // This is a regular message, not a command
@@ -341,6 +367,8 @@ void Runner::run() {
             chat_meta_info_t meta_info;
             meta_info.max_prefill_len = this->prefill_chunk_len;
             uniformed_input.prompt = input;
+            uniformed_input.requested_max_new_tokens =
+                normalize_requested_max_new_tokens(this->generate_limit);
             
             this->auto_chat_engine->start_total_timer();
             
@@ -408,14 +436,22 @@ void Runner::cmd_status(std::vector<std::string>& input_list) {
 void Runner::cmd_load(std::vector<std::string>& input_list) {
     std::string model_name = input_list[1];
 
-    std::pair<std::string, std::unique_ptr<AutoModel>> auto_model = get_auto_model(model_name, this->supported_models, &this->npu_device_inst);
+    std::pair<std::string, std::unique_ptr<AutoModel>> auto_model = get_auto_model(model_name, this->supported_models, this->npu_device_inst);
     model_name = auto_model.first;
 
     if (model_name != this->tag) {
         this->tag = model_name;
 
-        if (!this->downloader.is_model_downloaded(this->tag)) {
-            this->downloader.pull_model(this->tag);
+        switch (this->downloader.is_model_downloaded(this->tag, false, /*fast_check=*/true)) {
+            case ModelDownloader::ModelStatus::Ready:
+                break;
+            case ModelDownloader::ModelStatus::Outdated:
+            case ModelDownloader::ModelStatus::Missing:
+                this->downloader.pull_model(this->tag, this->modelscope);
+                break;
+            case ModelDownloader::ModelStatus::Incompatible:
+                header_print("ERROR", "Model is incompatible with this version of FastFlowLM: " + this->tag);
+                exit(EXIT_FAILURE);
         }
         auto_chat_engine.reset();
         if(model_name=="gpt-oss:20b")
@@ -425,7 +461,9 @@ void Runner::cmd_load(std::vector<std::string>& input_list) {
         auto [new_tag, model_info] = this->supported_models.get_model_info(this->tag);
         this->auto_chat_engine->configure_parameter("img_pre_resize", this->img_pre_resize);
         try {
-            this->auto_chat_engine->load_model(this->supported_models.get_model_path(new_tag), model_info, this->ctx_length, this->preemption);
+            const auto load_started = std::chrono::steady_clock::now();
+            this->auto_chat_engine->load_model(this->supported_models.get_load_path(new_tag), model_info, this->ctx_length, this->preemption, this->backend);
+            report_load_time(load_started);
         }
         catch (const std::exception& e) {
             header_print("ERROR", "Failed to load model: " + std::string(e.what()));

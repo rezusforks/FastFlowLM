@@ -9,420 +9,263 @@
 #include "AutoModel/modeling_gemma4e.hpp"
 #include "metrices.hpp"
 
+#include <cctype>
+
 namespace {
-std::string trim_gemma4e_tool_value(std::string value) {
-    size_t start = value.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) {
-        return "";
-    }
-
-    size_t end = value.find_last_not_of(" \t\r\n");
-    return value.substr(start, end - start + 1);
+std::string trim(const std::string& text) {
+    const auto first = std::find_if(text.begin(), text.end(), [](unsigned char c) { return !std::isspace(c); });
+    const auto last = std::find_if(text.rbegin(), text.rend(), [](unsigned char c) { return !std::isspace(c); }).base();
+    return first < last ? std::string(first, last) : std::string();
 }
-
-// --- Gemma4e tool-args parser -------------------------------------------------
-// The model emits relaxed JSON for tool arguments:
-//   - keys are bare identifiers (e.g. `name:`) — sometimes also "..." quoted
-//   - string values are delimited by <|"|>...<|"|>, but the model frequently
-//     omits the opener and/or replaces the closer with a plain `"`
-//   - values can also be objects {..}, arrays [..], booleans, null, or numbers
-//   - inside a string value, raw `"`, raw newlines, and even the literal
-//     substring `<|"|>` can appear as content
-//
-// We rewrite the input into well-formed JSON via recursive-descent.
-struct Gemma4eArgsParser {
-    const std::string& s;
-    size_t i = 0;
-    static constexpr size_t marker_len = 5;
-    static constexpr const char* quote_marker_lit = "<|\"|>";
-
-    explicit Gemma4eArgsParser(const std::string& src) : s(src) {}
-
-    void skip_ws() {
-        while (i < s.size() &&
-               std::isspace(static_cast<unsigned char>(s[i]))) ++i;
-    }
-    void skip_ws_at(size_t& pos) const {
-        while (pos < s.size() &&
-               std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
-    }
-    bool match_marker(size_t pos) const {
-        return pos + marker_len <= s.size() &&
-               s.compare(pos, marker_len, quote_marker_lit) == 0;
-    }
-
-    static void json_escape_char(std::string& out, char c) {
-        switch (c) {
-            case '"':  out.append("\\\""); break;
-            case '\\': out.append("\\\\"); break;
-            case '\n': out.append("\\n");  break;
-            case '\r': out.append("\\r");  break;
-            case '\t': out.append("\\t");  break;
-            case '\b': out.append("\\b");  break;
-            case '\f': out.append("\\f");  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x",
-                                  static_cast<unsigned char>(c));
-                    out.append(buf);
-                } else {
-                    out.push_back(c);
-                }
-                break;
-        }
-    }
-
-    bool match_word(const char* w, size_t len) const {
-        if (i + len > s.size()) return false;
-        if (s.compare(i, len, w) != 0) return false;
-        if (i + len == s.size()) return true;
-        unsigned char nc = static_cast<unsigned char>(s[i + len]);
-        return !(std::isalnum(nc) || nc == '_');
-    }
-
-    // Parse one JSON value. `terminators` is the set of chars that end a
-    // bare (undelimited) string at depth 0 (e.g. ",}" inside an object,
-    // ",]" inside an array, "" at the very top).
-    std::string parse_value(const std::string& terminators) {
-        skip_ws();
-        if (i >= s.size()) return "null";
-        char c = s[i];
-        if (c == '{') return parse_object();
-        if (c == '[') return parse_array();
-        if (match_word("true",  4)) { i += 4; return "true";  }
-        if (match_word("false", 5)) { i += 5; return "false"; }
-        if (match_word("null",  4)) { i += 4; return "null";  }
-        if (c == '-' || (c >= '0' && c <= '9')) return parse_number();
-        return parse_string(terminators);
-    }
-
-    std::string parse_number() {
-        size_t start = i;
-        if (s[i] == '-') ++i;
-        while (i < s.size()) {
-            char c = s[i];
-            if ((c >= '0' && c <= '9') || c == '.' ||
-                c == 'e' || c == 'E' || c == '+' || c == '-') ++i;
-            else break;
-        }
-        return s.substr(start, i - start);
-    }
-
-    std::string parse_key() {
-        skip_ws();
-        std::string key;
-        if (i >= s.size()) return key;
-        if (match_marker(i)) {
-            i += marker_len;
-            while (i < s.size() && !match_marker(i)) key.push_back(s[i++]);
-            if (match_marker(i)) i += marker_len;
-        } else if (s[i] == '"') {
-            ++i;
-            while (i < s.size() && s[i] != '"') {
-                if (s[i] == '\\' && i + 1 < s.size()) {
-                    key.push_back(s[i]);
-                    key.push_back(s[i + 1]);
-                    i += 2;
-                } else {
-                    key.push_back(s[i++]);
-                }
-            }
-            if (i < s.size() && s[i] == '"') ++i;
-        } else {
-            while (i < s.size() &&
-                   (std::isalnum(static_cast<unsigned char>(s[i])) ||
-                    s[i] == '_')) {
-                key.push_back(s[i++]);
-            }
-        }
-        return key;
-    }
-
-    std::string parse_object() {
-        // assumes s[i] == '{'
-        ++i;
-        std::string out = "{";
-        bool first = true;
-        while (i < s.size()) {
-            skip_ws();
-            if (i >= s.size()) break;
-            if (s[i] == '}') { ++i; break; }
-
-            std::string key = parse_key();
-            if (key.empty()) {
-                // can't make progress; bail
-                if (i < s.size() && s[i] == '}') { ++i; }
-                break;
-            }
-            skip_ws();
-            if (i < s.size() && s[i] == ':') ++i;
-
-            std::string val = parse_value(",}");
-
-            if (!first) out.push_back(',');
-            first = false;
-            out.push_back('"');
-            for (char kc : key) json_escape_char(out, kc);
-            out.append("\":");
-            out.append(val);
-
-            skip_ws();
-            if (i < s.size() && s[i] == ',') ++i;
-        }
-        out.push_back('}');
-        return out;
-    }
-
-    std::string parse_array() {
-        // assumes s[i] == '['
-        ++i;
-        std::string out = "[";
-        bool first = true;
-        while (i < s.size()) {
-            skip_ws();
-            if (i >= s.size()) break;
-            if (s[i] == ']') { ++i; break; }
-
-            std::string val = parse_value(",]");
-            if (!first) out.push_back(',');
-            first = false;
-            out.append(val);
-
-            skip_ws();
-            if (i < s.size() && s[i] == ',') ++i;
-        }
-        out.push_back(']');
-        return out;
-    }
-
-    // Parse a string value. Accepts three forms:
-    //   - <|"|>...<|"|>  (or <|"|>...")  -- marker opener, marker or " closer
-    //   - "..."                          -- regular JSON string
-    //   - bare text                      -- ends at depth-0 terminator
-    std::string parse_string(const std::string& terminators) {
-        enum Mode { MARKER, QUOTE, BARE };
-        Mode mode = BARE;
-        if (match_marker(i)) { mode = MARKER; i += marker_len; }
-        else if (s[i] == '"') { mode = QUOTE; ++i; }
-
-        auto is_terminator = [&](size_t pos) {
-            size_t k = pos;
-            skip_ws_at(k);
-            if (k >= s.size()) return true;
-            return terminators.find(s[k]) != std::string::npos;
-        };
-
-        // QUOTE-mode only: honor JSON-style backslash escapes verbatim.
-        auto consume_quote_escape = [&](std::string& out) {
-            // s[i] == '\\'
-            if (i + 1 >= s.size()) {
-                json_escape_char(out, s[i]);
-                ++i;
-                return;
-            }
-            char nc = s[i + 1];
-            switch (nc) {
-                case '"': case '\\': case '/':
-                case 'b': case 'f': case 'n': case 'r': case 't':
-                    out.push_back('\\');
-                    out.push_back(nc);
-                    i += 2;
-                    return;
-                case 'u': {
-                    if (i + 5 < s.size() &&
-                        std::isxdigit(static_cast<unsigned char>(s[i + 2])) &&
-                        std::isxdigit(static_cast<unsigned char>(s[i + 3])) &&
-                        std::isxdigit(static_cast<unsigned char>(s[i + 4])) &&
-                        std::isxdigit(static_cast<unsigned char>(s[i + 5]))) {
-                        out.append(s, i, 6);
-                        i += 6;
-                        return;
-                    }
-                    break;
-                }
-                default: break;
-            }
-            json_escape_char(out, s[i]);
-            ++i;
-        };
-
-        // For MARKER and BARE modes we first collect the raw content, then
-        // JSON-encode it. Backslash policy is decided per-string:
-        //   - if every `\` is followed by a valid JSON escape char, treat
-        //     them as escapes (so e.g. `\n` becomes a real newline)
-        //   - otherwise treat every `\` as a literal char (so Windows paths
-        //     like `C:\Users\nock9\Desktop\abc.txt` are preserved verbatim)
-        auto is_escape_char = [](char c) {
-            return c == '"' || c == '\\' || c == '/' ||
-                   c == 'b' || c == 'f' || c == 'n' ||
-                   c == 'r' || c == 't' || c == 'u';
-        };
-        auto encode_raw = [&](const std::string& raw, std::string& out) {
-            bool all_valid = true;
-            for (size_t k = 0; k < raw.size(); ++k) {
-                if (raw[k] == '\\') {
-                    if (k + 1 >= raw.size() || !is_escape_char(raw[k + 1])) {
-                        all_valid = false;
-                        break;
-                    }
-                    ++k;
-                }
-            }
-            for (size_t k = 0; k < raw.size(); ++k) {
-                char c = raw[k];
-                if (c == '\\' && all_valid && k + 1 < raw.size()) {
-                    char nc = raw[k + 1];
-                    if (nc == 'u' && k + 5 < raw.size() &&
-                        std::isxdigit(static_cast<unsigned char>(raw[k + 2])) &&
-                        std::isxdigit(static_cast<unsigned char>(raw[k + 3])) &&
-                        std::isxdigit(static_cast<unsigned char>(raw[k + 4])) &&
-                        std::isxdigit(static_cast<unsigned char>(raw[k + 5]))) {
-                        out.append(raw, k, 6);
-                        k += 5;
-                    } else {
-                        out.push_back('\\');
-                        out.push_back(nc);
-                        ++k;
-                    }
-                } else {
-                    json_escape_char(out, c);
-                }
-            }
-        };
-
-        std::string value;
-        std::string raw;       // used in MARKER / BARE modes
-        int depth = 0;
-        while (i < s.size()) {
-            if (mode == MARKER) {
-                if (match_marker(i)) {
-                    size_t after = i + marker_len;
-                    if (is_terminator(after)) { i = after; break; }
-                    raw.append(quote_marker_lit, marker_len);
-                    i = after;
-                    continue;
-                }
-                if (s[i] == '"' || s[i] == '`') {
-                    // The model occasionally substitutes a plain `"` or even
-                    // a backtick `` ` `` for the closing <|"|> marker. Treat
-                    // either as a close only when followed by a terminator,
-                    // so they remain valid string content otherwise.
-                    if (is_terminator(i + 1)) { ++i; break; }
-                    raw.push_back(s[i]);
-                    ++i;
-                    continue;
-                }
-                raw.push_back(s[i]);
-                ++i;
-                continue;
-            }
-            if (mode == QUOTE) {
-                char c = s[i];
-                if (c == '\\') {
-                    consume_quote_escape(value);
-                    continue;
-                }
-                if (c == '"') { ++i; break; }
-                json_escape_char(value, c);
-                ++i;
-                continue;
-            }
-            // BARE
-            if (match_marker(i)) {
-                size_t after = i + marker_len;
-                if (depth == 0 && is_terminator(after)) { i = after; break; }
-                raw.append(quote_marker_lit, marker_len);
-                i = after;
-                continue;
-            }
-            char c = s[i];
-            if (depth == 0 && terminators.find(c) != std::string::npos) break;
-            if (c == '{' || c == '[' || c == '(') ++depth;
-            else if ((c == '}' || c == ']' || c == ')') && depth > 0) --depth;
-            raw.push_back(c);
-            ++i;
-        }
-
-        if (mode != QUOTE) {
-            encode_raw(raw, value);
-        }
-
-        std::string out = "\"";
-        out.append(value);
-        out.push_back('"');
-        return out;
-    }
-};
-
-std::pair<std::string, json> parse_gemma4e_tool_content(std::string tool_content) {
-    tool_content = trim_gemma4e_tool_value(tool_content);
-
-    const std::string prefix = "call:";
-    if (tool_content.find(prefix) == 0) {
-        tool_content = trim_gemma4e_tool_value(tool_content.substr(prefix.length()));
-    }
-
-    // std::cout << "[DEBUG after prefix removal]" << std::endl;
-    // std::cout << tool_content << std::endl;
-
-    // only has tool name but no args
-    size_t brace_pos = tool_content.find('{');
-    if (brace_pos == std::string::npos) {
-        return {trim_gemma4e_tool_value(tool_content), json::object()};
-    }
-
-    std::string tool_name = trim_gemma4e_tool_value(tool_content.substr(0, brace_pos));
-    std::string args_str = trim_gemma4e_tool_value(tool_content.substr(brace_pos));
-
-    // std::cout << "[DEBUG after parsing tool name and args]" << std::endl;
-    // std::cout << "Tool Name: " << tool_name << std::endl;
-    // std::cout << "Args Str: " << args_str << std::endl;
-
-    // Rewrite the relaxed args into well-formed JSON via recursive-descent.
-    Gemma4eArgsParser parser(args_str);
-    parser.skip_ws();
-    std::string normalized;
-    if (parser.i < args_str.size() && args_str[parser.i] == '{') {
-        normalized = parser.parse_object();
-    } else {
-        // Unexpected shape; wrap whatever we get into an object so the
-        // downstream JSON parse step still has a sensible structure.
-        normalized = parser.parse_value("");
-    }
-
-    // std::cout << "[DEBUG normalized args]" << std::endl;
-    // std::cout << normalized << std::endl;
-
-    // Final: parse to a real JSON object; fall back to empty object on failure.
-    json args_json = json::object();
-    try {
-        args_json = json::parse(normalized);
-    } catch (const std::exception& e) {
-        std::cerr << "[WARNING] Failed to parse tool args as JSON: "
-                  << e.what() << std::endl;
-        std::cerr << "Raw args: " << normalized << std::endl;
-    }
-
-    return {tool_name, args_json};
-}
-}
-
+} // namespace
 
 /************              Gemma4e family            **************/
-Gemma4e::Gemma4e(xrt::device* npu_device_inst) : AutoModel(npu_device_inst, "Gemma4e") {}
+Gemma4e::Gemma4e(flm_rt::device* npu_device_inst) : AutoModel(npu_device_inst, "Gemma4e") {}
 
-void Gemma4e::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption) {
-    
-    this->_shared_load_model(model_path, model_info, default_context_length, enable_preemption);
-    
-    this->q4nx = std::make_unique<Q4NX>(this->model_path);
-    this->lm_engine = std::make_unique<gemma4e_npu>(*this->lm_config, this->npu.get(), this->MAX_L);
+gemma4e_engine_config_t Gemma4e::engine_config() const {
+    return read_gemma4e_engine_config<gemma4e_npu>(this->lm_engine);
+}
 
-    this->lm_engine->load_weights(*this->q4nx);
-    //free the q4nx
-    this->q4nx.reset();
+gemma4e_engine_config_t Gemma4e_Flash::engine_config() const {
+    return read_gemma4e_engine_config<gemma4e_flash>(this->lm_engine);
+}
+
+const flm_state_api* Gemma4e::engine_state_api() const {
+    return gemma4e_npu_state_api(this->lm_engine);
+}
+
+int Gemma4e_Flash::_pin_system_prefix(const std::string& system_text) {
     this->lm_engine->clear_context();
+    this->token_history.clear();
+    this->checkpoint_his.clear();
+    this->_forget_history_media();
+    this->total_tokens = 0;
+    this->last_token = -1;
+    this->system_tokens = 0;
+    this->system_his.clear();
+    this->pinned_system_text = system_text;
+
+    if (system_text.empty()) {
+        return 0;
+    }
+
+    // Find the longest token prefix shared by all prompts that carry this
+    // system turn. Template two otherwise-identical prompts that differ only
+    // in the first character of the user message and take the common prefix.
+    auto templated = [&](const std::string& user_text) {
+        nlohmann::ordered_json messages = nlohmann::ordered_json::array();
+        messages.push_back({ {"role", "system"}, {"content", system_text} });
+        messages.push_back({ {"role", "user"}, {"content", user_text} });
+        return this->apply_chat_template(messages);
+    };
+    std::vector<int> probe_a = this->tokenizer->encode(templated("A"));
+    std::vector<int> probe_b = this->tokenizer->encode(templated("\xe4\xbd\xa0")); // U+4F60, CJK probe
+
+    size_t shared = 0;
+    while (shared < probe_a.size() && shared < probe_b.size() && probe_a[shared] == probe_b[shared]) {
+        shared++;
+    }
+    if (shared == 0) {
+        header_print("WARNING", "Gemma4e_Flash: could not isolate a reusable system prefix, every turn will prefill in full");
+        return 0;
+    }
+
+    std::vector<int> tokens(probe_a.begin(), probe_a.begin() + shared);
+    chat_meta_info_t pin_meta;
+    pin_meta.restore_allowed = false;
+    if (!this->_shared_insert(pin_meta, tokens, [] { return false; }, nullptr)) {
+        this->lm_engine->clear_context();
+        this->token_history.clear();
+        this->checkpoint_his.clear();
+        this->_forget_history_media();
+        return 0;
+    }
+
+    this->system_his = this->token_history;
+    // the probes are text only, read in without a payload: the pin holds no image or audio
+    this->history_media_ = std::vector<prompt_media_t>{};
+    this->_checkpoint_history();
+    this->lm_engine->checkpoint();
+    this->system_tokens = static_cast<int>(shared);
+
+    for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
+        this->profiler_list[i].reset();
+    }
+
+    header_print("FLM", "Gemma4e_Flash: system prefix pinned (" + std::to_string(this->system_tokens) + " tokens).");
+    return this->system_tokens;
+}
+
+void Gemma4e_Flash::_forget_pin() {
+    this->pinned_system_text.clear();
+    this->system_his.clear();
+    this->system_tokens = 0;
+}
+
+void Gemma4e_Flash::clear_context() {
+    Gemma4e::clear_context();
+    this->_forget_pin();
+}
+
+void Gemma4e_Flash::_reset_turn() {
+    if (this->system_tokens > 0) {
+        this->total_tokens = static_cast<uint32_t>(this->lm_engine->restore());
+        this->token_history = this->system_his;
+        this->checkpoint_his = this->system_his;
+        // the pin is a text-only system prefix (_pin_system_prefix), so it holds no image or audio
+        this->history_media_ = std::vector<prompt_media_t>{};
+        this->checkpoint_media_ = std::vector<prompt_media_t>{};
+    } else {
+        this->lm_engine->clear_context();
+        this->token_history.clear();
+        this->checkpoint_his.clear();
+        this->_forget_history_media();
+        this->total_tokens = 0;
+    }
+    this->sampler->reset_penalties();
+    this->last_token = -1;
+    this->profiler_list[PREFILL_TIME].reset();
+    this->profiler_list[DECODING_TIME].reset();
+    this->profiler_list[SAMPLING_TIME].reset();
+    this->profiler_list[TKOEN_ENCODE_TIME].reset();
+    this->profiler_list[TKOEN_DECODE_TIME].reset();
+}
+
+bool Gemma4e_Flash::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
+    // Extract system text from the first message (if present).
+    std::string sys_text;
+    if (!input.messages.empty() && input.messages[0].value("role", "") == "system") {
+        const auto& content = input.messages[0]["content"];
+        if (content.is_string()) {
+            sys_text = content.get<std::string>();
+        } else if (content.is_array()) {
+            for (const auto& item : content) {
+                if (item.value("type", "") == "text") {
+                    sys_text += item.value("text", "");
+                }
+            }
+        }
+    }
+
+    if (sys_text != this->pinned_system_text) {
+        this->_pin_system_prefix(sys_text);
+    }
+
+    this->_reset_turn();
+
+    // Disable the prompt-cache restore path in the parent: _reset_turn() has
+    // already positioned the engine at the correct starting point (pin or
+    // clear). The parent's token_history now holds the pinned prefix, so
+    // _shared_insert's own prefix-match will skip those tokens automatically.
+    meta_info.restore_allowed = false;
+
+    return Gemma4e::insert(meta_info, input, is_cancelled);
+}
+
+std::string Gemma4e_Flash::generate(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled) {
+    std::string result;
+    assert(this->last_token != -1);
+
+    stop_reason_t reason = EOT_DETECTED;
+    int last_sampled_token = this->last_token;
+
+    this->token_history.push_back(last_token);
+    // the sample insert() took is the reply's first token, and counts toward the limit
+    meta_info.generated_tokens++;
+
+    if (this->is_normal_token(last_sampled_token) && last_sampled_token != -1) {
+        std::string token_str = this->tokenizer->run_time_decoder(last_sampled_token);
+        result += token_str;
+        os << token_str << std::flush;
+    }
+    if (this->is_eos(last_sampled_token)) {
+        // Sampled from the prefill, so no engine has run it.
+        this->token_history.pop_back();
+        meta_info.stop_reason = reason;
+        return result;
+    }
+    this->profiler_list[DECODING_TIME].reset();
+    this->profiler_list[TKOEN_DECODE_TIME].reset();
+    if (this->total_tokens >= this->MAX_L) {
+        header_print("WARNING", "Max length reached, stopping generation...");
+        reason = MAX_LENGTH_REACHED;
+    }
+    else if ((length_limit > 0) && (meta_info.generated_tokens >= length_limit)) {
+        reason = MAX_LENGTH_REACHED;
+    }
+    else while (true) {
+        // Running out of window is a truncation: test it here so it is recorded.
+        if (this->total_tokens >= this->MAX_L) {
+            reason = MAX_LENGTH_REACHED;
+            break;
+        }
+        if (is_cancelled()) {
+            reason = CANCEL_DETECTED;
+            break;
+        }
+
+        this->profiler_list[DECODING_TIME].start();
+        buffer<bf16> y = this->lm_engine->forward(last_sampled_token);
+        this->profiler_list[DECODING_TIME].stop(1);
+
+        this->profiler_list[SAMPLING_TIME].start();
+        int sampled_token = this->_sample(y, meta_info);
+        this->profiler_list[SAMPLING_TIME].stop(1);
+        this->total_tokens++;
+        last_sampled_token = sampled_token;
+
+        this->profiler_list[TKOEN_DECODE_TIME].start();
+        if (this->is_normal_token(sampled_token)) {
+            std::string token_str = this->tokenizer->run_time_decoder(sampled_token);
+            os << token_str << std::flush;
+            result += token_str;
+        }
+        this->profiler_list[TKOEN_DECODE_TIME].stop(1);
+
+        this->token_history.push_back(sampled_token);
+        meta_info.generated_tokens++;
+
+        if (this->is_eos(sampled_token)) {
+            // Single-turn: no forward_on_eos needed — kv cache is discarded
+            // by _reset_turn() at the start of every new request.
+            // The engine never ran it, so the history drops it.
+            this->token_history.pop_back();
+            break;
+        }
+        if ((length_limit > 0) && (meta_info.generated_tokens >= length_limit)) {
+            reason = MAX_LENGTH_REACHED;
+            break;
+        }
+    }
+
+    meta_info.decoding_duration = (uint64_t)(time_utils::cast_to_us(this->profiler_list[DECODING_TIME].get_total_time()).first) * 1e3;
+    meta_info.stop_reason = reason;
+    if (reason != EOT_DETECTED) {
+        // Cut short after sampling its last token: no engine has run that one.
+        this->token_history.pop_back();
+    }
+    if (this->total_tokens >= this->MAX_L) {
+        header_print("WARNING", "Max length reached, stopping generation...");
+    }
+    std::cout << std::endl;
+    header_print("FLM", "Model RAW Output: \n" + result);
+
+    // Single-turn: do not checkpoint here — the only checkpoint that matters
+    // is the pinned system prefix, which _pin_system_prefix() already owns.
+
+    return result;
+}
+
+std::string Gemma4e_Flash::generate_with_prompt(chat_meta_info_t& meta_info, lm_uniform_input_t& input, int length_limit, std::ostream& os) {
+    if (!this->insert(meta_info, input)) {
+        return "";
+    }
+    return this->generate(meta_info, length_limit, os);
+}
+
+void Gemma4e::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption, const std::string& backend) {
+    
+    this->_shared_load_backend(model_path, model_info, default_context_length, enable_preemption, backend);
     this->setup_tokenizer(model_path);
     this->sampler.reset();
 
@@ -441,21 +284,112 @@ void Gemma4e::load_model(std::string model_path, json model_info, int default_co
     for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
         this->profiler_list[i].reset();
     }
+    // Gemma4e_Flash shares this function but runs a different engine: the table is nullptr for it, the cache stays off.
+    // Text-only prompts only (see insert), so no image placeholder id is given.
+    _prefix_attach(lm_engine, this->engine_state_api());
 }
 
 void Gemma4e::setup_tokenizer(std::string model_path) {
     auto tokenizer_config = this->_shared_setup_tokenizer(model_path);
 }
 
-std::string Gemma4e::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools) {
+std::string Gemma4e::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools, bool continue_final_message) {
+    // Same as Gemma4_12B: the Gemma4 template emits unquoted keys (argument_needle:<|"|>...<|"|>), which
+    // minja's capability probe does not recognize, so it would wrongly polyfill tool calls and tool
+    // responses into a generic JSON blob. The template handles them natively.
+    minja::chat_template_options opt;
+    opt.polyfill_tools = false;
+    opt.polyfill_tool_calls = false;
+    opt.polyfill_tool_responses = false;
+    opt.polyfill_object_arguments = false;
+
+    // The template raises if tool_calls[].function.arguments is a string, but OpenAI-style clients send it
+    // serialized. Deserialize it here (what polyfill_object_arguments would do).
+    nlohmann::ordered_json normalized = messages;
+    for (auto& message : normalized) {
+        if (!message.is_object() || !message.contains("tool_calls")) continue;
+        for (auto& tool_call : message["tool_calls"]) {
+            if (!tool_call.is_object() || !tool_call.contains("function")) continue;
+            auto& function = tool_call["function"];
+            if (!function.is_object() || !function.contains("arguments")) continue;
+            auto& arguments = function["arguments"];
+            if (!arguments.is_string()) continue;
+            auto raw = arguments.get<std::string>();
+            if (raw.empty()) {
+                arguments = nlohmann::ordered_json::object();
+                continue;
+            }
+            auto parsed = nlohmann::ordered_json::parse(raw, nullptr, /* allow_exceptions= */ false);
+            if (parsed.is_object()) arguments = parsed;
+        }
+    }
+
     minja::chat_template_inputs inputs;
-    inputs.add_generation_prompt = true;
-    inputs.messages = messages;
+    inputs.messages = normalized;
     inputs.extra_context = this->extra_context;
     inputs.extra_context["enable_thinking"] = this->enable_think;
+    inputs.extra_context["conversational_mode"] = this->conversational_mode;
     if (!tools.empty())
         inputs.tools = tools;
-    return this->chat_tmpl->apply(inputs);
+    return this->_render_chat_template(inputs, continue_final_message, opt);
+}
+
+bool Gemma4e::_continue_verbatim(std::vector<int>& tokens, std::optional<int> requested_max_new_tokens) {
+    const std::vector<int>& ran = this->token_history;
+    if (ran.empty() || static_cast<size_t>(this->lm_engine->get_current_context_length()) != ran.size()) {
+        return false;
+    }
+    const std::vector<int> header = this->tokenizer->encode("<|turn>model\n");
+    const std::vector<int> turn_end = this->tokenizer->encode("<turn|>");
+    if (header.empty() || turn_end.size() != 1) {
+        return false;
+    }
+    // the reply the engine generated follows the last model header it ran
+    const auto at = std::find_end(ran.begin(), ran.end(), header.begin(), header.end());
+    if (at == ran.end()) {
+        return false;
+    }
+    const size_t start = static_cast<size_t>(at - ran.begin()) + header.size();
+    if (tokens.size() <= start || !std::equal(ran.begin(), ran.begin() + start, tokens.begin())) {
+        return false;
+    }
+    // the prompt's copy of that reply ends at the first <turn|> after its header
+    const auto reply_end = std::find(tokens.begin() + start, tokens.end(), turn_end[0]);
+    if (reply_end == tokens.end()) {
+        return false;
+    }
+    // an eos that ended the reply was run; a reply cut at the length limit lacks its last token
+    const bool ended = ran.back() == turn_end[0];
+    // A reply's content follows its thought channel; a reply cut inside that channel has none.
+    const auto content = [&](std::vector<int>::const_iterator begin, std::vector<int>::const_iterator end) {
+        if (begin != end && *begin == think_start_id) {
+            const auto close = std::find(begin, end, think_end_id);
+            if (close == end) return std::string();
+            begin = close + 1;
+        }
+        return trim(this->tokenizer->decode(std::vector<int>(begin, end)));
+    };
+    const std::string generated = content(ran.begin() + start, ended ? ran.end() - 1 : ran.end());
+    const std::string sent = content(tokens.begin() + start, reply_end);
+    std::vector<int> continued(ran);
+    if (generated != sent) {
+        // the client did get the token the engine did not run
+        if (ended || generated.empty() || sent.size() <= generated.size() || sent.compare(0, generated.size(), generated) != 0) {
+            return false;
+        }
+        const std::vector<int> rest = this->tokenizer->encode(sent.substr(generated.size()));
+        continued.insert(continued.end(), rest.begin(), rest.end());
+    }
+    continued.insert(continued.end(), ended ? reply_end + 1 : reply_end, tokens.end());
+    // the history keeps the thought channel the rendered prompt leaves out, so it can be the longer one
+    try {
+        this->_shared_validate_capacity(continued.size(), requested_max_new_tokens);
+    } catch (const ModelRequestError&) {
+        return false;
+    }
+    header_print("FLM", "Continuing the " << ran.size() << " tokens the engine ran, last reply included");
+    tokens = std::move(continued);
+    return true;
 }
 
 bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
@@ -465,6 +399,22 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
     if (input.messages.empty() && input.prompt.empty()) {
         header_print("WARNING", "No messages or prompt provided");
         return false;
+    }
+    // On OGA these models run text only. A ModelRequestError, not the engine_config()
+    // error: the handlers turn only the former into an HTTP 400.
+    if (this->backend_id() == flm::backend::kOgaHipepBackendId) {
+        bool images = !input.images.empty();
+        bool audios = !input.audios.empty();
+        for (const auto& message : input.messages) {
+            images = images || (message.contains("images") && !message["images"].empty());
+            audios = audios || (message.contains("audios") && !message["audios"].empty());
+        }
+        if (images || audios) {
+            throw ModelRequestError(400, false,
+                "the loaded backend '" + this->backend_id() + "' does not accept " +
+                    (images ? "image" : "audio") + " input",
+                "invalid_request_error");
+        }
     }
 
     constexpr bool DEBUG_IMAGE_PREPROCESS = false;
@@ -477,16 +427,32 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
     int total_audio_clips = 0;
     std::vector<audio_data_t> audio_data_list;
 
+    nlohmann::ordered_json gemma4_message = nlohmann::ordered_json::array();
     if (!input.messages.empty()) { // Server Processing
+        // Build gemma4_message (used for the template) in the same pass that
+        // decodes images/audio, so an invalid image (e.g. bad base64) never
+        // gets an image-token placeholder; otherwise image_payload would
+        // fall out of sync with the placeholders and the prompt would still
+        // try to prefill a nonexistent image.
         int total_images = 0;
         for (auto& message : input.messages) {
+            if (!message.contains("images") && !message.contains("audios")) {
+                gemma4_message.push_back(message);
+                continue;
+            }
+
+            nlohmann::ordered_json newContent = nlohmann::ordered_json::array();
             // Process Images
             if (message.contains("images")) {
                 for (auto& img : message["images"]) {
                     std::string img_str = img.get<std::string>();
-                    if (!img_str.empty()) total_images++;
-                    
+
                     gemma4e_image_t image = this->load_image_base64(img_str);
+                    if (image.width <= 0 || image.height <= 0) {
+                        header_print("ERROR", "Skipping invalid base64 image; prefilling language only for this item");
+                        continue;
+                    }
+
                     std::vector<bf16> pixel_values;
                     std::pair<int, int> patch_element_per_patch;
                     uint32_t valid_patch_size = 0;
@@ -501,36 +467,52 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
                     image_payload.image_grid_pairs_per_image.push_back(image_grid_pairs);
                     image_payload.num_soft_tokens_per_image.push_back(num_soft_tokens);
                     image_payload.num_images++;
+                    total_images++;
+
+                    newContent.push_back({{"type", "image"}, {"image", img}});
                 }
             }
             // Process Audios
             if (message.contains("audios")) {
-                gemma4e_npu *gemma4e_engine = dynamic_cast<gemma4e_npu*>(this->lm_engine.get());
+                const gemma4e_engine_config_t gemma4e_engine = this->engine_config();
                 for (auto& aud : message["audios"]) {
                     std::string audio_str = aud.get<std::string>();
-                    audio_data_t audio_data = this->load_audio_base64(audio_str, gemma4e_engine->Gemma4E_Audio_resample_rate, MonoDownmixMode::MEAN);
+                    audio_data_t audio_data = this->load_audio_base64(audio_str, gemma4e_engine.Gemma4E_Audio_resample_rate, MonoDownmixMode::MEAN);
                     if (audio_data.channels > 1) {
                         std::cerr << "only mono audio is supported." << std::endl;
                         exit(-1);
                     }
                     std::vector<audio_data_t> clipped_audio_data = this->clip_audio_length(audio_data, max_support_audio_length_seconds);
+                    if (this->max_audio_chunks > 0 && (int)clipped_audio_data.size() > this->max_audio_chunks) {
+                        header_print_g("FLM", "Audio in message is " + std::to_string((int)clipped_audio_data.size())
+                            + " chunks long; cutting off after the first " + std::to_string(this->max_audio_chunks) + ".");
+                        clipped_audio_data.resize(this->max_audio_chunks);
+                    }
                     audio_data_list.insert(audio_data_list.end(), clipped_audio_data.begin(), clipped_audio_data.end());
                     total_audio_clips += clipped_audio_data.size();
                     if (clipped_audio_data.size() > 1) {
                         header_print_g("FLM", "Audio in message is split into " + std::to_string(clipped_audio_data.size()) + " chunks for processing.");
                         std::cout << std::endl;
                     }
+                    newContent.push_back({{"type", "audio"}, {"audio", aud}});
                 }
             }
+            newContent.push_back({{"type", "text"}, {"text", message.value("content", "")}});
+
+            nlohmann::ordered_json newItem = {
+                {"role", message.value("role", "user")},
+                {"content", newContent}
+            };
+            gemma4_message.push_back(newItem);
         }
         header_print("FLM", "Total images: " << total_images);
     }
     else { // CLI Processing
         if (input.audios.size() > 0) {
-            gemma4e_npu *gemma4e_engine = dynamic_cast<gemma4e_npu*>(this->lm_engine.get());
+            const gemma4e_engine_config_t gemma4e_engine = this->engine_config();
             for (int i = 0; i < input.audios.size(); i++) {
                 std::string audio_str = input.audios[i];
-                audio_data_t audio_data = this->load_audio(audio_str, gemma4e_engine->Gemma4E_Audio_resample_rate, MonoDownmixMode::MEAN); 
+                audio_data_t audio_data = this->load_audio(audio_str, gemma4e_engine.Gemma4E_Audio_resample_rate, MonoDownmixMode::MEAN); 
                 
                 if (audio_data.channels > 1) {
                     std::cerr << "only mono audio is supported, but got " << audio_data.original_channels << " channels. Please convert it to mono first." << std::endl;
@@ -539,6 +521,11 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
 
                 // apply clipping
                 std::vector<audio_data_t> clipped_audio_data = this->clip_audio_length(audio_data, max_support_audio_length_seconds);
+                if (this->max_audio_chunks > 0 && (int)clipped_audio_data.size() > this->max_audio_chunks) {
+                    header_print_g("FLM", "Audio[" + std::to_string(i) + "] is " + std::to_string((int)clipped_audio_data.size())
+                        + " chunks long; cutting off after the first " + std::to_string(this->max_audio_chunks) + ".");
+                    clipped_audio_data.resize(this->max_audio_chunks);
+                }
                 audio_data_list.insert(audio_data_list.end(), clipped_audio_data.begin(), clipped_audio_data.end());
                 total_audio_clips += clipped_audio_data.size();
                 
@@ -573,11 +560,11 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
     if (!audio_data_list.empty()) {
         this->extract_spectrogram(audio_data_list, audio_payload);
 
-        gemma4e_npu *gemma4e_engine = dynamic_cast<gemma4e_npu*>(this->lm_engine.get());
-        const unsigned int conv2d_kernel = gemma4e_engine->Gemma4E_Audio_conv2d_kernel_size;
-        const unsigned int conv2d_stride = gemma4e_engine->Gemma4E_Audio_conv2d_Stride;
-        const unsigned int conv2d_padding = gemma4e_engine->Gemma4e_Audio_conv2d_Padding;
-        const unsigned int max_audio_seq_length = max_support_audio_length_seconds * gemma4e_engine->Gemma4E_Audio_resample_rate;    
+        const gemma4e_engine_config_t gemma4e_engine = this->engine_config();
+        const unsigned int conv2d_kernel = gemma4e_engine.Gemma4E_Audio_conv2d_kernel_size;
+        const unsigned int conv2d_stride = gemma4e_engine.Gemma4E_Audio_conv2d_Stride;
+        const unsigned int conv2d_padding = gemma4e_engine.Gemma4e_Audio_conv2d_Padding;
+        const unsigned int max_audio_seq_length = max_support_audio_length_seconds * gemma4e_engine.Gemma4E_Audio_resample_rate;    
         
         constexpr float frame_length_ms = 20.0f;
         constexpr float hop_length_ms   = 10.0f;
@@ -608,33 +595,9 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
         }
     }
     if (!input.messages.empty()) { // already a formated messages, usually from REST API
-        nlohmann::ordered_json gemma4_message = nlohmann::ordered_json::array();
-        for (const auto& item : input.messages) {
-            if (!item.contains("images") && !item.contains("audios")) {
-                gemma4_message.push_back(item);
-                continue;
-            }
-
-            nlohmann::ordered_json newContent = nlohmann::ordered_json::array();
-            if (item.contains("images")) {
-                for (const auto& img : item["images"]) {
-                    newContent.push_back({{"type", "image"}, {"image", img}});
-                }
-            }
-            if (item.contains("audios")) {
-                for (const auto& aud : item["audios"]) {
-                    newContent.push_back({{"type", "audio"}, {"audio", aud}});
-                }
-            }
-            newContent.push_back({{"type", "text"}, {"text", item.value("content", "")}});
-
-            nlohmann::ordered_json newItem = {
-                {"role", item.value("role", "user")},
-                {"content", newContent}
-            };
-            gemma4_message.push_back(newItem);
-        }
-        templated_text = this->apply_chat_template(gemma4_message, input.tools);
+        // gemma4_message was already built above, in the same pass that
+        // decoded images/audio.
+        templated_text = this->apply_chat_template(gemma4_message, input.tools, meta_info.continue_final_message);
     }
     else if (!input.prompt.empty()) { // a pure text, usually from the cli
         nlohmann::ordered_json messages;
@@ -673,6 +636,9 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
     
     int image_counter = 0;
     int audio_counter = 0;
+    // soft tokens of each placeholder as expanded, in prompt order: the prompt-cache plan locates the items by them
+    std::vector<size_t> image_token_counts;
+    std::vector<size_t> audio_token_counts;
    
     for (int i = 0; i < tokens_init.size(); i++) {
         if (tokens_init[i] == image_token_id) {
@@ -681,6 +647,7 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
                 tokens.push_back(image_token_id);
             }
             tokens.push_back(eoi_token_id); // a separator token between images, not necessary but can help the model to better distinguish different images
+            image_token_counts.push_back(image_payload.num_soft_tokens_per_image[image_counter]);
             image_counter++;
         } 
         else if (tokens_init[i] == audio_token_id){
@@ -689,6 +656,7 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
                 tokens.push_back(audio_token_id);
             }
             tokens.push_back(eoa_token_id); // a separator token between audios, not necessary but can help the model to better distinguish different audios
+            audio_token_counts.push_back(audio_payload.num_soft_tokens_per_audio[audio_counter]);
             audio_counter++;
         }
         else {
@@ -700,139 +668,116 @@ bool Gemma4e::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
       
     this->profiler_list[TKOEN_ENCODE_TIME].stop(tokens.size());
 
-    // ----------------------------------------------------------------------
-    // Prompt-cache aware multi-modal alignment.
-    //
-    // AutoModel::_shared_insert prefix-matches `tokens` against `checkpoint_his`
-    // over the FULL length of `checkpoint_his`. If every token matches, it
-    // erases that prefix before prefilling; otherwise it calls clear_context()
-    // and skips nothing. We must NOT erase `tokens` here -- _shared_insert
-    // needs the untrimmed sequence to run that very check. What we DO need
-    // to fix up locally is the multi-modal payload (which carries
-    // pixels/spectrograms for the WHOLE prompt, including images/audios from
-    // earlier turns that are already cached): drop the fully-cached leading
-    // images/audios so the surviving payload aligns with the surviving soft
-    // tokens after _shared_insert performs its own erase.
-    // ----------------------------------------------------------------------
-    size_t prefix_skip_count = 0;
-    {
-        const size_t idx = this->checkpoint_his.size();
-        for (size_t i = 0; i < idx; i++) {
-            if (i < tokens.size() && tokens[i] == this->checkpoint_his[i]) {
-                prefix_skip_count++;
-            } else {
-                break;
-            }
-        }
-        // Must match the entirety of checkpoint_his, otherwise _shared_insert
-        // will clear the context and not skip anything.
-        if (prefix_skip_count != idx) {
-            prefix_skip_count = 0;
-        }
+    // Prefix slots, text-only prompts. A prompt that carries pictures or audio, or a text turn whose history still holds their
+    // soft tokens (the payload is gone by then), takes the in-place path below. The generation prompt ("<|turn>model\n") is how
+    // the next turn renders this reply's header: the whole prompt is saved (trim 0).
+    const bool modal_tokens = std::any_of(tokens.begin(), tokens.end(), [this](int t) {
+        return t == image_token_id || t == audio_token_id || t == boi_token_id || t == boa_token_id;
+    });
+    if (image_payload.num_images == 0 && audio_payload.num_audios == 0 && !modal_tokens
+        && this->_prefix_slot_mode(meta_info, tokens.size(), 0)) {
+        checkpoint_his.clear();
+        return this->_prefix_text_insert(meta_info, tokens, 0, "<|turn>user", is_cancelled);
+    }
+    this->_prefix_legacy_path();
 
-        if (prefix_skip_count > 0 && (image_payload.num_images > 0 || audio_payload.num_audios > 0)) {
-            // Count modal soft-tokens that landed inside the cached prefix.
-            int skipped_image_tokens = 0;
-            int skipped_audio_tokens = 0;
-            for (size_t i = 0; i < prefix_skip_count; i++) {
-                if (tokens[i] == image_token_id) skipped_image_tokens++;
-                else if (tokens[i] == audio_token_id) skipped_audio_tokens++;
-            }
+    // OGA cannot reuse a prompt that leaves the history it ran, so it runs on from that history instead
+    const bool continued = meta_info.restore_allowed && !modal_tokens &&
+                           this->backend_id() == flm::backend::kOgaHipepBackendId &&
+                           this->_continue_verbatim(tokens, input.requested_max_new_tokens);
 
-            // Walk images in order; each image's soft-token block is either
-            // entirely inside the cached prefix or not at all (chat-template
-            // boundaries never split a single image's block).
-            size_t images_to_drop = 0;
-            {
-                int consumed = 0;
-                for (unsigned i = 0; i < image_payload.num_images; i++) {
-                    const int n = static_cast<int>(image_payload.num_soft_tokens_per_image[i]);
-                    if (consumed + n <= skipped_image_tokens) {
-                        consumed += n;
-                        images_to_drop++;
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            // Same for audios.
-            size_t audios_to_drop = 0;
-            {
-                int consumed = 0;
-                for (unsigned i = 0; i < audio_payload.num_audios; i++) {
-                    const int n = static_cast<int>(audio_payload.num_soft_tokens_per_audio[i]);
-                    if (consumed + n <= skipped_audio_tokens) {
-                        consumed += n;
-                        audios_to_drop++;
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            auto drop_front = [](auto& vec, size_t n) {
-                if (n == 0) return;
-                if (n >= vec.size()) { vec.clear(); return; }
-                vec.erase(vec.begin(), vec.begin() + n);
-            };
-
-            if (images_to_drop > 0) {
-                drop_front(image_payload.image_patch__element_per_patch, images_to_drop);
-                drop_front(image_payload.valid_patch_size_per_image,     images_to_drop);
-                drop_front(image_payload.pixel_values,                   images_to_drop);
-                drop_front(image_payload.image_grid_pairs_per_image,     images_to_drop);
-                drop_front(image_payload.num_soft_tokens_per_image,      images_to_drop);
-                image_payload.num_images -= static_cast<unsigned>(images_to_drop);
-                header_print("FLM",
-                    "Prompt-cache hit: dropped " << images_to_drop
-                    << " cached image(s) from payload");
-            }
-
-            if (audios_to_drop > 0) {
-                drop_front(audio_payload.mel_spectrograms,                audios_to_drop);
-                drop_front(audio_payload.mel_spectrogram_frames_per_audio, audios_to_drop);
-                drop_front(audio_payload.mel_spectrogram_bins_per_audio,   audios_to_drop);
-                drop_front(audio_payload.num_soft_tokens_per_audio,        audios_to_drop);
-                audio_payload.num_audios -= static_cast<unsigned>(audios_to_drop);
-                header_print("FLM",
-                    "Prompt-cache hit: dropped " << audios_to_drop
-                    << " cached audio(s) from payload");
-            }
-        }
+    int restore_idx = -1;
+    // The legacy checkpoint keeps only the rings: it relies on the global rows still being the ones it was taken with. A slot request
+    // overwrites them, so it drops the checkpoint's token history, and the in-place path below then has nothing to restore.
+    if (meta_info.restore_allowed && !checkpoint_his.empty() && !continued) {
+        restore_idx = this->lm_engine->restore();
+        this->total_tokens = restore_idx;
+        this->_restore_history(); // restore the token history to be consistent with the restored KV cache, which is crucial for correct functioning of _shared_insert's prefix-matching logic
     }
 
-    // find the last image token index, expressed relative to the tokens that
-    // will SURVIVE _shared_insert's prefix erase (i.e. shifted by -prefix_skip_count).
-    int last_image_token_index = -1;
-    for (int i = static_cast<int>(prefix_skip_count); i < (int)tokens.size(); i++) {
-        if ((tokens[i] == image_token_id || tokens[i] == boi_token_id)) {
-            last_image_token_index = i - static_cast<int>(prefix_skip_count);
+    // The payload carries every image and audio of the prompt, earlier turns included. _shared_insert skips what the engine
+    // already holds, so the items inside that skip leave the payload; _plan_reuse makes the same skip decision against the
+    // same token_history. Audio is located per placeholder, as it was expanded.
+    std::vector<prompt_media_t> media;
+    prompt_media_from_counts(tokens, image_token_id, image_token_counts, prompt_media_t::kImage, media);
+    prompt_media_from_counts(tokens, audio_token_id, audio_token_counts, prompt_media_t::kAudio, media);
+    // Content hash of each item over exactly what the engine reads for it, taken before the drop: the soft-token count
+    // only follows the aspect ratio (images) or the sample count (audio), so a same-sized other picture or clip would
+    // otherwise match the history and be reused.
+    size_t next_image = 0;
+    size_t next_audio = 0;
+    for (prompt_media_t& m : media) {
+        uint64_t h = 0;
+        if (m.kind == prompt_media_t::kImage && next_image < image_payload.num_images) {
+            const size_t i = next_image++;
+            const auto& dims = image_payload.image_patch__element_per_patch[i];
+            const uint64_t shape[4] = { static_cast<uint64_t>(static_cast<uint32_t>(dims.first)), static_cast<uint64_t>(static_cast<uint32_t>(dims.second)),
+                                        image_payload.valid_patch_size_per_image[i], image_payload.num_soft_tokens_per_image[i] };
+            const auto& pixels = image_payload.pixel_values[i];
+            const auto& grid = image_payload.image_grid_pairs_per_image[i];
+            h = prefix_hash_bytes(shape, sizeof(shape), 0xcbf29ce484222325ull);
+            h = prefix_hash_bytes(pixels.data(), pixels.size() * sizeof(pixels[0]), h);
+            h = prefix_hash_bytes(grid.data(), grid.size() * sizeof(grid[0]), h);
+        } else if (m.kind == prompt_media_t::kAudio && next_audio < audio_payload.num_audios) {
+            const size_t i = next_audio++;
+            const uint64_t shape[3] = { static_cast<uint64_t>(static_cast<uint32_t>(audio_payload.mel_spectrogram_frames_per_audio[i])),
+                                        static_cast<uint64_t>(static_cast<uint32_t>(audio_payload.mel_spectrogram_bins_per_audio[i])),
+                                        audio_payload.num_soft_tokens_per_audio[i] };
+            const auto& mel = audio_payload.mel_spectrograms[i];
+            h = prefix_hash_bytes(shape, sizeof(shape), 0x84222325cbf29ce4ull);
+            h = prefix_hash_bytes(mel.data(), mel.size() * sizeof(mel[0]), h);
+        } else {
+            continue;
         }
+        m.hash = h != 0 ? h : 1; // 0 means "not hashed"
     }
-    last_image_token_index++; // plus the end of image tokens
+    const prompt_reuse_t plan = this->_plan_reuse(tokens, media);
+
+    auto drop_front = [](auto& vec, size_t n) {
+        if (n == 0) return;
+        if (n >= vec.size()) { vec.clear(); return; }
+        vec.erase(vec.begin(), vec.begin() + n);
+    };
+    const size_t images_to_drop = std::min<size_t>(plan.skipped_media[prompt_media_t::kImage], image_payload.num_images);
+    if (images_to_drop > 0) {
+        drop_front(image_payload.image_patch__element_per_patch, images_to_drop);
+        drop_front(image_payload.valid_patch_size_per_image,     images_to_drop);
+        drop_front(image_payload.pixel_values,                   images_to_drop);
+        drop_front(image_payload.image_grid_pairs_per_image,     images_to_drop);
+        drop_front(image_payload.num_soft_tokens_per_image,      images_to_drop);
+        image_payload.num_images -= static_cast<unsigned>(images_to_drop);
+    }
+    const size_t audios_to_drop = std::min<size_t>(plan.skipped_media[prompt_media_t::kAudio], audio_payload.num_audios);
+    if (audios_to_drop > 0) {
+        drop_front(audio_payload.mel_spectrograms,                audios_to_drop);
+        drop_front(audio_payload.mel_spectrogram_frames_per_audio, audios_to_drop);
+        drop_front(audio_payload.mel_spectrogram_bins_per_audio,   audios_to_drop);
+        drop_front(audio_payload.num_soft_tokens_per_audio,        audios_to_drop);
+        audio_payload.num_audios -= static_cast<unsigned>(audios_to_drop);
+    }
+
+    // one past the last prefilled image row, relative to the skip: the first chunk is widened to hold the images,
+    // which travel with it alone. Audio never widened it here, so it is left out.
+    const int last_image_token_index = static_cast<int>(plan.media_end_by_kind[prompt_media_t::kImage]);
 
     // hardware
     gemma4e_multi_modal_payload_t multi_modal_payload;
     multi_modal_payload.image_payload = image_payload;
     multi_modal_payload.audio_payload = audio_payload;
 
-    int restore_idx = -1;
-    gemma4e_npu *gemma4e_engine = dynamic_cast<gemma4e_npu*>(this->lm_engine.get());
     const bool has_multimodal = image_payload.num_images > 0 || audio_payload.num_audios > 0;
-
-    if (meta_info.restore_allowed) {
-        restore_idx = gemma4e_engine->restore();
-        this->total_tokens = restore_idx;
-        this->token_history = checkpoint_his; // restore the token history to be consistent with the restored KV cache, which is crucial for correct functioning of _shared_insert's prefix-matching logic
-    }
 
     bool success = has_multimodal
         ? this->_shared_insert(meta_info, tokens, is_cancelled, &multi_modal_payload, last_image_token_index)
         : this->_shared_insert(meta_info, tokens, is_cancelled, nullptr);
 
-    checkpoint_his = token_history;
-    int checkpoint_idx = gemma4e_engine->checkpoint();
+    // Single-turn (flash): the only checkpoint is the pinned system prefix, which Gemma4e_Flash owns. Taking this one would
+    // overwrite it with the whole first prompt, and every later request would restore into that stale context.
+    if (this->enable_think && !this->single_turn) {
+        this->_checkpoint_history();
+        int checkpoint_idx = this->lm_engine->checkpoint();
+    }
+    
     return success;
 }
 
@@ -851,6 +796,8 @@ std::string Gemma4e::generate(chat_meta_info_t& meta_info, int length_limit, std
     int last_sampled_token = this->last_token;
 
     this->token_history.push_back(last_token);
+    // the sample insert() took is the reply's first token, and counts toward the limit
+    meta_info.generated_tokens++;
 
     if (this->is_normal_token(last_sampled_token) && last_sampled_token != -1){
         std::string token_str = this->tokenizer->run_time_decoder(last_sampled_token);
@@ -859,6 +806,9 @@ std::string Gemma4e::generate(chat_meta_info_t& meta_info, int length_limit, std
 
     }
     if (this->is_eos(last_sampled_token)){
+        // Sampled from the prefill, so no engine has run it.
+        this->token_history.pop_back();
+        meta_info.stop_reason = reason;
         return result;
     }
     this->profiler_list[DECODING_TIME].reset();
@@ -866,16 +816,18 @@ std::string Gemma4e::generate(chat_meta_info_t& meta_info, int length_limit, std
     if (this->total_tokens >= this->MAX_L){
         header_print("WARNING", "Max length reached, stopping generation...");
         reason = MAX_LENGTH_REACHED;
-        return result;
     }
-    while (this->total_tokens < this->MAX_L){
+    else if ((length_limit > 0) && (meta_info.generated_tokens >= length_limit)){
+        reason = MAX_LENGTH_REACHED;
+    }
+    else while (true){
+        // Running out of window is a truncation: test it here so it is recorded.
+        if (this->total_tokens >= this->MAX_L){
+            reason = MAX_LENGTH_REACHED;
+            break;
+        }
         if (is_cancelled()) {
             reason = CANCEL_DETECTED;
-            // reset stream content 
-            buffer_.clear();
-            current_mode_ = StreamEventType::CONTENT;
-            tool_name_.clear();
-            is_in_tool_block_ = false;
             break;
         }
         this->profiler_list[DECODING_TIME].start();
@@ -883,7 +835,7 @@ std::string Gemma4e::generate(chat_meta_info_t& meta_info, int length_limit, std
         this->profiler_list[DECODING_TIME].stop(1);
 
         this->profiler_list[SAMPLING_TIME].start();
-        int sampled_token = this->sampler->sample(y);
+        int sampled_token = this->_sample(y, meta_info);
         this->profiler_list[SAMPLING_TIME].stop(1);
         this->total_tokens++;
         last_sampled_token = sampled_token;
@@ -898,7 +850,14 @@ std::string Gemma4e::generate(chat_meta_info_t& meta_info, int length_limit, std
         this->token_history.push_back(sampled_token);
         if (this->is_eos(sampled_token)){
             meta_info.generated_tokens++;
-            this->lm_engine->forward(last_sampled_token);
+            // Its row is past the end of the engine's KV window once the context is
+            // full: forwarding it there corrupts the engine for every later request,
+            // so the next prompt has to carry it instead.
+            if (this->total_tokens < this->MAX_L) {
+                this->lm_engine->forward(last_sampled_token);
+            } else {
+                this->token_history.pop_back();
+            }
             break;
         }
         meta_info.generated_tokens++;
@@ -915,14 +874,17 @@ std::string Gemma4e::generate(chat_meta_info_t& meta_info, int length_limit, std
     std::cout << std::endl;
     header_print("FLM", "Model RAW Output: \n" + result);
     
-    if (!this->enable_think) {
-        gemma4e_npu *gemma4e_engine = dynamic_cast<gemma4e_npu*>(this->lm_engine.get());
-        int checkpoint_idx = gemma4e_engine->checkpoint();
-        // copy the token history at the checkpoint except the last one token, which is the start token for generation and should not be included in the checkpoint history
-        checkpoint_his = token_history;
-        checkpoint_his.pop_back();       
+    if (reason != EOT_DETECTED) {
+        // Cut short after sampling its last token: no engine has run that one,
+        // so the next prompt has to carry it.
+        this->token_history.pop_back();
     }
-    
+    if (!this->enable_think) {
+        // the history the checkpoint holds: an eos ending the turn was run, a cut-off token was not
+        int checkpoint_idx = this->lm_engine->checkpoint();
+        this->_checkpoint_history();
+    }
+
     return result;
 }
 
@@ -934,215 +896,8 @@ std::string Gemma4e::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifor
         os << "<think>\n" << std::flush;
     }
 
-    gemma4e_npu *gemma4e_engine = dynamic_cast<gemma4e_npu*>(this->lm_engine.get());
-    int checkpoint_idx = gemma4e_engine->checkpoint();
-    int restore_idx = gemma4e_engine->restore();
+    int checkpoint_idx = this->lm_engine->checkpoint();
+    int restore_idx = this->lm_engine->restore();
     header_print_r("FLM", "Checkpoint before generation: " << checkpoint_idx << ", restore point: " << restore_idx << ", user context length: " << this->token_history.size());
     return this->_shared_generate(meta_info, length_limit, os);
-}
-
-// Non-stream
-NonStreamResult Gemma4e::parse_nstream_content(const std::string response_text) {
-    NonStreamResult result;
-
-    std::string think_start_tag = "<|channel>thought";
-    std::string think_end_tag = "<channel|>";
-    std::string tool_start_tag = "<|tool_call>";
-    std::string tool_end_tag = "<tool_call|>";
-    std::string tool_resp_tag = "<|tool_response>";
-
-    size_t think_start_pos = response_text.find(think_start_tag);
-    size_t think_end_pos = response_text.find(think_end_tag);
-    size_t tool_start_pos = response_text.find(tool_start_tag);
-    size_t tool_end_pos = response_text.find(tool_end_tag, tool_start_pos == std::string::npos ? 0 : tool_start_pos + tool_start_tag.length());
-
-    bool is_reasoning = (think_start_pos != std::string::npos && think_end_pos != std::string::npos && think_end_pos > think_start_pos);
-    bool is_tool = (tool_start_pos != std::string::npos);
-
-    // 1. Parse Reasoning Content
-    if (is_reasoning) {
-        size_t start = think_start_pos + think_start_tag.length();
-        result.reasoning_content = response_text.substr(start, think_end_pos - start);
-    }
-
-    // 2. Parse Tool Calling
-    if (is_tool) {
-        size_t start = tool_start_pos + tool_start_tag.length();
-        if (tool_end_pos == std::string::npos || tool_end_pos < start) {
-            tool_end_pos = response_text.find(tool_resp_tag, start);
-            if (tool_end_pos == std::string::npos) {
-                tool_end_pos = response_text.length();
-            }
-        }
-        std::string tool_content = response_text.substr(start, tool_end_pos - start);
-        auto parsed_tool = parse_gemma4e_tool_content(tool_content);
-        result.tool_name = parsed_tool.first;
-        result.tool_args = parsed_tool.second.dump();
-    }
-    // 3. Parse Normal Content
-    else {
-        if (is_reasoning) {
-            // Content is whatever comes AFTER the reasoning block
-            result.content = response_text.substr(think_end_pos + think_end_tag.length());
-        } else {
-            // No reasoning, no tools -> the whole text is content
-            result.content = response_text;
-        }
-
-        // Cleanup: Strip out <|tool_response> if the model accidentally hallucinated it into plain text
-        size_t resp_pos = 0;
-        while ((resp_pos = result.content.find(tool_resp_tag, resp_pos)) != std::string::npos) {
-            result.content.erase(resp_pos, tool_resp_tag.length());
-        }
-    }
-
-    return result;
-}
-
-
-// Stream
-StreamResult Gemma4e::parse_stream_content(const std::string content) {
-    return parse_stream_content_impl(content, false);
-}
-
-StreamResult Gemma4e::parse_stream_content_final(const std::string content) {
-    return parse_stream_content_impl(content, true);
-}
-
-StreamResult Gemma4e::parse_stream_content_impl(const std::string content, bool is_final) {
-    const std::string MARKER_THINK_START = "<|channel>thought";
-    const std::string MARKER_THINK_END = "<channel|>";
-    const std::string MARKER_TOOL_START = "<|tool_call>";
-    const std::string MARKER_TOOL_END = "<tool_call|>";
-    const std::string MARKER_TOOL_RESP = "<|tool_response>";
-
-    StreamResult result;
-    buffer_ += content;
-
-    while (true) {
-        if (is_in_tool_block_) {
-            size_t tool_end_pos = buffer_.find(MARKER_TOOL_END);
-            size_t tool_resp_pos = buffer_.find(MARKER_TOOL_RESP);
-            
-            if (tool_end_pos != std::string::npos || tool_resp_pos != std::string::npos || (is_final && !buffer_.empty())) {
-                size_t actual_end_pos = buffer_.size();
-                size_t skip_length = 0;
-
-                if (tool_end_pos != std::string::npos) {
-                    actual_end_pos = tool_end_pos;
-                    skip_length = MARKER_TOOL_END.length();
-                }
-                if (tool_resp_pos != std::string::npos && tool_resp_pos < actual_end_pos) {
-                    actual_end_pos = tool_resp_pos;
-                    skip_length = MARKER_TOOL_RESP.length();
-                }
-
-                std::string tool_content = buffer_.substr(0, actual_end_pos);
-
-                // std::cout << "DEBUG" << std::endl;
-                // std::cout << tool_content << std::endl; // For debugging: see the raw tool content extracted from the stream
-
-                buffer_ = buffer_.substr(actual_end_pos + skip_length);
-                is_in_tool_block_ = false;
-
-                result.type = StreamEventType::TOOL_DONE;
-                
-                static int tool_counter = 0;
-                result.tool_id = "call_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(tool_counter++);
-                auto parsed_tool = parse_gemma4e_tool_content(tool_content);
-                result.tool_name = parsed_tool.first;
-                result.tool_args_str = parsed_tool.second.dump();
-                return result;
-            } 
-            else {
-                result.type = StreamEventType::WAITING;
-                return result;
-            }
-        }
-
-        // Find the earliest occurring marker in the buffer to avoid skipping tags
-        size_t pos_tool_start = buffer_.find(MARKER_TOOL_START);
-        size_t pos_tool_resp  = buffer_.find(MARKER_TOOL_RESP);
-        size_t pos_think      = std::string::npos;
-
-        if (current_mode_ == StreamEventType::CONTENT) {
-            pos_think = buffer_.find(MARKER_THINK_START);
-        } 
-        else if (current_mode_ == StreamEventType::REASONING) {
-            pos_think = buffer_.find(MARKER_THINK_END);
-        }
-
-        size_t min_pos = std::string::npos;
-        if (pos_tool_start != std::string::npos) min_pos = std::min(min_pos, pos_tool_start);
-        if (pos_tool_resp != std::string::npos)  min_pos = std::min(min_pos, pos_tool_resp);
-        if (pos_think != std::string::npos)      min_pos = std::min(min_pos, pos_think);
-
-        // Flush the text content before the earliest marker
-        if (min_pos != std::string::npos && min_pos > 0) {
-            result.content = buffer_.substr(0, min_pos);
-            result.type = current_mode_;
-            buffer_ = buffer_.substr(min_pos);
-            return result;
-        }
-
-        // Process the exact marker located at index 0
-        if (min_pos == 0) {
-            if (pos_tool_resp == 0) {
-                buffer_ = buffer_.substr(MARKER_TOOL_RESP.length());
-                continue;
-            }
-            if (pos_tool_start == 0) {
-                is_in_tool_block_ = true;
-                buffer_ = buffer_.substr(MARKER_TOOL_START.length());
-                continue;
-            }
-            if (pos_think == 0) {
-                if (current_mode_ == StreamEventType::CONTENT) {
-                    buffer_ = buffer_.substr(MARKER_THINK_START.length());
-                    current_mode_ = StreamEventType::REASONING;
-                } else {
-                    buffer_ = buffer_.substr(MARKER_THINK_END.length());
-                    current_mode_ = StreamEventType::CONTENT;
-                }
-                continue;
-            }
-        }
-
-        // Safe Flush Mechanism
-        std::vector<std::string> active_markers;
-        active_markers.push_back(MARKER_TOOL_START);
-        active_markers.push_back(MARKER_TOOL_RESP);
-
-        if (current_mode_ == StreamEventType::CONTENT) {
-            active_markers.push_back(MARKER_THINK_START);
-        } 
-        else if (current_mode_ == StreamEventType::REASONING) {
-            active_markers.push_back(MARKER_THINK_END);
-        }
-
-        size_t safe_flush_len = buffer_.length();
-        for (const auto& marker : active_markers) {
-            for (size_t i = 1; i <= marker.length() && i <= buffer_.length(); ++i) {
-                if (buffer_.compare(buffer_.length() - i, i, marker, 0, i) == 0) {
-                    safe_flush_len = std::min(safe_flush_len, buffer_.length() - i);
-                }
-            }
-        }
-
-        if (safe_flush_len > 0) {
-            result.content = buffer_.substr(0, safe_flush_len);
-            result.type = current_mode_;
-            buffer_ = buffer_.substr(safe_flush_len);
-            return result;
-        } 
-        else if (buffer_.length() > 0) {
-            result.type = StreamEventType::WAITING;
-            return result;
-        }
-
-        break;
-    }
-
-    result.type = current_mode_;
-    return result;
 }

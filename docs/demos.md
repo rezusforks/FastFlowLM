@@ -16,9 +16,6 @@ sections:
         href: "https://www.youtube.com/@FastFlowLM-YT/playlists"
         style: primary
         external: true
-      - label: "Remote test drive"
-        href: "/test-drive/"
-        style: ghost
 
   - type: media
     variant: alt
@@ -38,7 +35,7 @@ sections:
   - type: media
     variant: alt
     kicker: "Gemma3 (Vision) on NPU"
-    title: "Gemma3 (Vision) understand and describe the image"
+    title: "Gemma3 (Vision) understands and describes the image"
     body: |
       Gemma3 Vision turns your NPU into a visual reasoning engine, delivering instant understanding with near-zero CPU/GPU load.
     media:

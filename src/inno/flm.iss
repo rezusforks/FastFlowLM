@@ -4,7 +4,7 @@
 
 AppName=flm
 
-AppVersion=0.9.44
+AppVersion=1.0.13
 
 AppPublisher=FastFlowLM
 
@@ -54,16 +54,31 @@ Source: "llama_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "gemma_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "gemma_text_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "gemma_embedding.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "d3_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "gpt_oss_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "lfm2_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "lfm3_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "phi4_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "qwen2_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "qwen2vl_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "qwen3_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "qwen3vl_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "qwen3vl_flash.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "qwen3_5vl_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "qwen3_5vl_flash.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "minicpm_v_4_7_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "minicpm_v_4_7_moe_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "qwen3_5_omni_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "qwen3_6_moe_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "qwen3_8mtp_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "nanbeige_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "gemma4e_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "gemma4e_flash.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "gemma4e_dflash.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "gemma4e_dflash_flash.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "gemma4e_12b_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "hunyuan_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "hy_mem_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "lm_head.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dequant.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "whisper_npu.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -74,26 +89,20 @@ Source: "mha.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "abseil_dll.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "avcodec-61.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "avdevice-61.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "avfilter-10.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "avformat-61.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "avutil-59.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "libprotobuf-lite.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "libprotobuf.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "libprotoc.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "swresample-5.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "swscale-8.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "zlib1.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "libfftw3-3.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "libfftw3f-3.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "libfftw3l-3.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Application icon (used for shortcuts)
 
 Source: "logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 Source: "model_list.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "model_info.json"; DestDir: "{app}"; Flags: ignoreversion
+
+; Third-party license notices
+Source: "THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 ; xclbins directory - recursively include all files
 Source: "..\xclbins\*"; DestDir: "{app}\xclbins"; Flags: ignoreversion recursesubdirs createallsubdirs

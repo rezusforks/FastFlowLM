@@ -7,7 +7,7 @@
 #include <string>
 #include <stdexcept>
 #include <immintrin.h>
-#include "fftw3.h"
+#include "audio_process_utils/rfft.hpp"
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -87,7 +87,7 @@ namespace avx512 {
         }
     }
 
-    // AVX512 optimized batch rfft using FFTW plan_many
+    // AVX512 optimized batch rfft (single batched FFT over all frames)
     void rfft_batch_avx512(
         const float* frames,
         float* out_complex,
@@ -99,6 +99,14 @@ namespace avx512 {
     void rfft_magnitude_batch_avx512(
         const float* frames,
         float* out_magnitude,
+        int num_frames,
+        int frame_length,
+        int fft_length);
+
+    // AVX512 optimized fused rfft + squared power (no sqrt)
+    void stft_power_batch_avx512(
+        const float* frames,
+        float* out_power,
         int num_frames,
         int frame_length,
         int fft_length);
@@ -139,7 +147,9 @@ namespace avx512 {
         int frame_length,
         int hop_length);
 
-    // AVX512 vectorized log(x + floor)
+    // AVX512 vectorized log with optional clamp and selectable base.
+    // Matches the template parameters of audioproc::log_mel_floor.
+    template<bool UseClamp = false, int Base = 0>
     void log_mel_floor_avx512(
         const float* in,
         float* out,

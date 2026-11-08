@@ -19,34 +19,23 @@ private:
 
     void setup_tokenizer(std::string model_path);
 
-    enum ToolGrammarState {
-        STATE_EXPECT_TO_FUNCTIONS,
-        STATE_EXPECT_FUNCTION_NAME,
-        STATE_EXPECT_CONSTRAIN,
-        STATE_EXPECT_MESSAGE,
-        STATE_COMPLETE
-    };
-    ToolGrammarState current_state = STATE_EXPECT_TO_FUNCTIONS;
-    std::string accumulated_text;
-    void reset_tool_grammar_state() {
-        current_state = STATE_EXPECT_TO_FUNCTIONS;
-        accumulated_text.clear();
-    }
-public:
-    GPT_OSS(xrt::device* npu_device_inst);
+    /// \brief Keep what the engine ran when the prompt goes on from its last reply
+    /// \note The template renders a past reply as its final message alone, so the
+    ///       prompt leaves the engine's history where the reply's analysis began.
+    ///       When the prompt's copy of the reply is the final message the engine
+    ///       generated, the prompt is rewritten to the engine's history plus what
+    ///       follows the reply.
+    /// \return whether `tokens` now continues token_history
+    bool _continue_verbatim(std::vector<int>& tokens, std::optional<int> requested_max_new_tokens);
 
-    void load_model(std::string model_path, json model_info, int default_context_length = -1, bool enable_preemption = false) override;
-    std::string apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools = nlohmann::ordered_json::object()) override;
+public:
+    GPT_OSS(flm_rt::device* npu_device_inst);
+
+    void load_model(std::string model_path, json model_info, int default_context_length = -1, bool enable_preemption = false, const std::string& backend = "") override;
+    std::string apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools = nlohmann::ordered_json::object(), bool continue_final_message = false) override;
     bool insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled = [] { return false; }) override;
     std::string generate(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled = [] { return false; }) override;
     std::string generate_with_prompt(chat_meta_info_t& meta_info, lm_uniform_input_t& input, int length_limit, std::ostream& os = std::cout) override;
-    int _sample_in_tool(buffer<bf16>& logits);
-    std::vector<int> get_to_functions_tokens();
-    std::vector<int> get_function_name_tokens();
-    void update_state(int token_id);
-    void mask_logits(buffer<bf16>& logits, const std::vector<int>& allowed_tokens);
-    NonStreamResult parse_nstream_content(const std::string response_text);
-    StreamResult parse_stream_content(const std::string content);
     chat_template_type_t get_chat_template_type() {
         return chat_template_type_t::harmony;
     }

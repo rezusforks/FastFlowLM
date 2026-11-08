@@ -15,6 +15,22 @@ qwen3vl_image_t Qwen3VL::load_image(const std::string& filename) {
         return empty_result;
     }
 
+    const int forced_long_side = this->_forced_long_side();
+    if (forced_long_side > 0) {
+        const int longer_side = std::max(decoded.width, decoded.height);
+        if (longer_side > forced_long_side) {
+            image_data_t resized_image;
+            float ratio = static_cast<float>(forced_long_side) / static_cast<float>(longer_side);
+            int target_width = std::max(1, static_cast<int>(std::round(decoded.width * ratio)));
+            int target_height = std::max(1, static_cast<int>(std::round(decoded.height * ratio)));
+            header_print_r("FLM", "Qwen3VL Flash forcing image longer side to " + std::to_string(forced_long_side) + " -> (" + std::to_string(target_width) + ", " + std::to_string(target_height) + ")");
+            if (image_reader_.resize_image(decoded, target_width, target_height, resized_image)) {
+                image_reader_.recycle(decoded);
+                decoded = std::move(resized_image);
+            }
+        }
+    }
+
     if (this->image_pre_resize > 0) {
         int max_height;
         switch(this->image_pre_resize) {
@@ -29,6 +45,19 @@ qwen3vl_image_t Qwen3VL::load_image(const std::string& filename) {
                 break;
             case 4:
                 max_height = 1440;
+                break;
+            case 5:
+                max_height = 2160;
+                break;
+            case 6:
+                max_height = 2880;
+                break;
+            case 7:
+                max_height = 3240;
+                break;
+            case 8:
+                max_height = 4320;
+                break;
             default:
                 max_height = decoded.height; // no resizing
                 break;
@@ -70,6 +99,22 @@ qwen3vl_image_t Qwen3VL::load_image_base64(const std::string& base64_string) {
         return empty_result;
     }
 
+    const int forced_long_side = this->_forced_long_side();
+    if (forced_long_side > 0) {
+        const int longer_side = std::max(decoded.width, decoded.height);
+        if (longer_side > forced_long_side) {
+            image_data_t resized_image;
+            float ratio = static_cast<float>(forced_long_side) / static_cast<float>(longer_side);
+            int target_width = std::max(1, static_cast<int>(std::round(decoded.width * ratio)));
+            int target_height = std::max(1, static_cast<int>(std::round(decoded.height * ratio)));
+            header_print_r("FLM", "Qwen3VL forcing image longer side to " + std::to_string(forced_long_side) + " -> (" + std::to_string(target_width) + ", " + std::to_string(target_height) + ")");
+            if (image_reader_.resize_image(decoded, target_width, target_height, resized_image)) {
+                image_reader_.recycle(decoded);
+                decoded = std::move(resized_image);
+            }
+        }
+    }
+
     if (this->image_pre_resize > 0) {
         int max_height;
         switch(this->image_pre_resize) {
@@ -84,6 +129,18 @@ qwen3vl_image_t Qwen3VL::load_image_base64(const std::string& base64_string) {
                 break;
             case 4:
                 max_height = 1440;
+                break;
+            case 5:
+                max_height = 2160;
+                break;
+            case 6:
+                max_height = 2880;
+                break;
+            case 7:
+                max_height = 3240;
+                break;
+            case 8:
+                max_height = 4320;
                 break;
             default:
                 max_height = decoded.height; // no resizing

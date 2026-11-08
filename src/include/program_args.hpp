@@ -17,12 +17,20 @@ struct program_args_t {
     bool preemption = false;
     bool asr = false;
     bool embed = false;
+    std::string asr_tag = "whisper-v3:turbo";   // ASR model to load when asr is set (-a <tag>)
+    std::string embed_tag = "embed-gemma:300m"; // embedding model to load when embed is set (-e <tag>)
+    std::string decision = ""; // --decision <tag>: serve a decision model (POST /v1/systemone)
     bool json_output = false;
     int ctx_length = -1; // let model decide
+    std::string backend = ""; // let the catalog decide; see AutoModel/model_backend.hpp
     int prefill_chunk_len = -1; // let model decide
+    int prefix_cache_mb = -1;   // host memory (MiB) for saved prompt snapshots; -1 = the model's default
+    int prefix_slots = -1;      // how many prompt snapshots to keep; -1 = the model's default, 0 = off
+    int prefix_min_gain = -1;   // tokens a new end snapshot must add over a saved one covering its prompt; -1 = default (128), 0 = no minimum
 
     // handling input file
     std::string input_file_name = "";
+    int iterations = 2;
 
     // specific commands
     int img_pre_resize = 3;
@@ -33,6 +41,9 @@ struct program_args_t {
     // for pull command
     bool force_redownload = false;
     
+    // for download related command
+    bool modelscope = false;
+
     // for serve command
     std::string host = "127.0.0.1";
     size_t max_socket_connections = 10;
