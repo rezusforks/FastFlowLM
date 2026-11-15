@@ -8,6 +8,7 @@
 #pragma once
 #include "AutoModel/automodel.hpp"
 #include "metrices.hpp"
+#include "models/qwen3_5vl/flm/aie2p/qwen3_5vl_npu.hpp"
 
 
 #include "typedef.hpp"
@@ -20,14 +21,40 @@
 #include <fstream>
 #include <iostream>
 
+/// \brief how the vision model wants its images preprocessed
+/// \note From the NPU engine's config, or from the OGA package's
+///       processor_config.json. All zero when the engine runs no images.
+struct qwen3_5vl_vision_geometry_t {
+    unsigned patch_size = 0;
+    unsigned merge_size = 0;
+    unsigned temporal_patch_size = 0;
+    unsigned min_pixels = 0;
+    unsigned max_pixels = 0;
+    float rescale_factor = 0.0f;
+    float image_mean = 0.0f;
+    float image_std = 0.0f;
+
+    bool valid() const { return patch_size && merge_size && temporal_patch_size && max_pixels; }
+};
+
 /************              Qwen3VL_4b            **************/
 class Qwen3_5VL : public AutoModel {
-private:
-
+protected:
     bool enable_think = false;
     bool enable_tool = false;
+
+    /// \brief render a request into the prompt tokens and the image payload (what insert() prefills)
+    /// \param meta_info the request's meta info
+    /// \param input the request (messages or prompt, images)
+    /// \param image_payload receives the decoded, preprocessed images
+    /// \param tokens receives the prompt tokens, image soft tokens expanded, the generation prompt included
+    /// \return false if the request has nothing to render
+    bool _build_tokens(chat_meta_info_t& meta_info, lm_uniform_input_t& input, qwen3_5vl_image_payload_t& image_payload, std::vector<int>& tokens);
+
+private:
     int think_start_id = 248068;
     int think_end_id = 248069;
+    
     void setup_tokenizer(std::string model_path);
     
     // Image processing functionality
@@ -45,25 +72,60 @@ private:
     int min_pixels,
     int max_pixels);
     
-    void preprocess_image(qwen3_5vl_image_t& image,  std::vector<bf16> &pixel_values);
+    /// \param max_pixels the most pixels the resized image may have
+    void preprocess_image(qwen3_5vl_image_t& image,  std::vector<bf16> &pixel_values, unsigned max_pixels);
+
+    /// \brief hand the loaded engine to the prefix cache (when it is the XRT qwen3_5vl one that has slots)
+    void _attach_prefix_cache();
+
+    /// \brief read the loaded engine's image preprocessing into vision_geometry
+    void _load_vision_geometry();
+
+    /// \brief continue the history the engine ran instead of restoring the checkpoint
+    /// \note The rendered prompt carries the last reply as the client sent it
+    ///       back. When that is the reply the engine generated, the prompt is
+    ///       rewritten to the engine's history plus what follows the reply, so
+    ///       nothing before it runs again. A later turn renders the earlier
+    ///       replies as this prompt does, so it is matched against this prompt
+    ///       (checkpoint_prompt_) and continues too. The template leaves the
+    ///       reasoning of earlier replies out, so a reply with reasoning, or cut
+    ///       inside it, is not continued: that turn runs as rendered.
+    /// \param rendered gets the prompt as rendered when `tokens` is rewritten
+    /// \return whether `tokens` now continues token_history
+    bool _continue_verbatim(std::vector<int>& tokens, std::optional<int> requested_max_new_tokens,
+                            std::vector<int>& rendered);
+
+    /// \brief the content of each image in checkpoint_his, kept on OGA
+    std::vector<uint64_t> checkpoint_image_hashes_;
+    /// \brief checkpoint_his as the template rendered it, when _continue_verbatim
+    ///        rewrote it; empty when a later turn is matched against checkpoint_his
+    ///        itself
+    std::vector<int> checkpoint_prompt_;
+
+protected:
+    qwen3_5vl_vision_geometry_t vision_geometry;
 
 public:
-    Qwen3_5VL(xrt::device* npu_device_inst);
+    Qwen3_5VL(flm_rt::device* npu_device_inst);
 
-    void load_model(std::string model_path, json model_inf, int default_context_length = -1, bool enable_preemption = false) override;
+    void load_model(std::string model_path, json model_inf, int default_context_length = -1, bool enable_preemption = false, const std::string& backend = "") override;
     //void toggle_enable_think() override;
     bool insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled = [] { return false; }) override;
     std::string generate(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled = [] { return false; }) override;
     std::string generate_with_prompt(chat_meta_info_t& meta_info, lm_uniform_input_t& input, int length_limit, std::ostream& os = std::cout) override;
-    std::string apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools = nlohmann::ordered_json::object()) override;
-    NonStreamResult parse_nstream_content(const std::string response_text);
-    StreamResult parse_stream_content(const std::string content);
-    StreamResult parse_stream_content_final(const std::string content) override;
+    std::string apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools = nlohmann::ordered_json::object(), bool continue_final_message = false) override;
+    bool supports_continue_final_message() const override { return true; }
 
 private:
-    StreamResult parse_stream_content_impl(const std::string content, bool is_final);
 
 public:
+
+    bool thinking_enabled() const override {
+        return this->enable_think;
+    }
+    bool tools_enabled() const override {
+        return this->enable_tool;
+    }
 
     /// \brief Configure a parameter with type-erased value
 	/// \param parameter_name the name of the parameter
@@ -120,6 +182,14 @@ public:
                     target_size = 1080;
                 } else if (this->image_pre_resize <= 4) {
                     target_size = 1440;
+                } else if (this->image_pre_resize <= 5) {
+                    target_size = 2160;
+                } else if (this->image_pre_resize <= 6) {
+                    target_size = 2880;
+                } else if (this->image_pre_resize <= 7) {
+                    target_size = 3240;
+                } else if (this->image_pre_resize <= 8) {
+                    target_size = 4320;
                 } else {
                     this->image_pre_resize = 0;
                     target_size = 0;

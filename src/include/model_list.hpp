@@ -5,7 +5,10 @@
 /// \version 0.9.24
 /// \note This class is used to manage the model list.
 #pragma once
+#include "AutoModel/backend_contract.hpp"
+#include "AutoModel/model_catalog_overlay.hpp"
 #include "nlohmann/json.hpp"
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -13,11 +16,20 @@
 #include <any>
 #include <unordered_set>
 #include <filesystem>
-#include "utils/utils.hpp"
+#include <map>
+#include <optional>
+#include <stdexcept>
+// Only the header_print* macros are needed here. Including utils/utils.hpp
+// instead would drag in the NPU runtime headers and make this class impossible
+// to unit test without an XRT/HRX toolchain.
+#include "utils/debug_utils.hpp"
 
 /// \note This class is used to manage the model list.
 class model_list {
     public:
+        using backend_provider_inventory_t =
+            flm::backend::BackendProviderInventory;
+
         std::unordered_set<std::string> all_tags;
         /// \brief constructor
         model_list(){}
@@ -26,29 +38,81 @@ class model_list {
         /// \brief constructor
         /// \param list_path the path to the model list
         /// \param exe_dir the executable directory for resolving relative paths
-        model_list(std::string& list_path, std::string& exe_dir){
+        /// \param platform the NPU generation this machine has ("aie2p" or
+        ///        "dev04"); an entry whose supported_platforms names a
+        ///        different generation is pruned, because these artifacts do
+        ///        not run on this silicon
+        /// \param backends the kernel flows this build links, as backend ids;
+        ///        an entry whose flow is not among them is pruned too
+        /// \param overlays extension catalog files merged without replacing
+        ///        built-in tags
+        /// \param frontends registered generation frontend families; overlay
+        ///        entries must name one of them
+        /// \note Two independent axes. The generation says what the silicon can
+        ///       run; the backend list says which kernels were linked in. Which
+        ///       flow runs an entry is not a third thing to look up: a tag is
+        ///       served by exactly one flow and its name says which, so a
+        ///       family ending in "-core" is ryzenai-corelib's and anything else
+        ///       is the FastFlowLM kernels'. That is why the two never contend
+        ///       for a tag -- phi4-mini-it and phi4-mini-it-core are separate
+        ///       entries, with their own artifacts and their own silicon.
+        model_list(std::string& list_path, std::string& exe_dir,
+                   std::string platform = "aie2p",
+                   std::vector<std::string> backends = {
+                       flm::backend::kFlmBackendId},
+                   std::vector<flm::catalog::ModelCatalogOverlay> overlays = {},
+                   std::vector<std::string> frontends = {},
+                   backend_provider_inventory_t backend_providers = {}){
             this->list_path = list_path;
+            this->platform_ = std::move(platform);
+            this->backends_ = std::move(backends);
+            this->backend_providers_ = std::move(backend_providers);
             std::ifstream config_file(list_path);
             if (!config_file.is_open()) {
                 std::cerr << "Failed to open config file: " << list_path << std::endl;
                 exit(1);
             }
             this->config = nlohmann::json::parse(config_file);
+            if (!overlays.empty()) {
+                this->builtin_tags_ = flm::catalog::model_catalog_tags(
+                    this->config, this->list_path);
+            }
+            for (const auto& overlay : overlays) {
+                this->merge_catalog_overlay(overlay, frontends);
+            }
             // Resolve model_root_path relative to executable directory
             std::string relative_model_path = this->config["model_path"];
             std::filesystem::path root_path = std::filesystem::path(exe_dir) / relative_model_path;
             this->model_root_path = root_path.string();
             config_file.close();
 
-            // Populate all_tags set
-            for (const auto& [model_type, sizes] : this->config["models"].items()) {
-                // insert default tag without size
-                all_tags.insert(model_type);
-                for (const auto& [size, model_info] : sizes.items()) {
-                    all_tags.insert(model_type + ":" + size);
-                }
+            // Prune before indexing: all_tags must describe what this machine can
+            // actually run, so an unsupported tag fails at validation instead of
+            // failing much later inside the model backend.
+            this->apply_support_filter();
+            // A dependant tag (one with a base_model) is only usable if its base
+            // is a real entry; drop the ones that are not before indexing.
+            this->validate_base_models();
+
+            this->rebuild_tags();
+
+            // An empty catalog is a real state, not a crash: it is what an
+            // install looks like when every entry names other silicon or other
+            // kernels. Say so once, here, where the reason is still known --
+            // "Models:" followed by nothing tells the user only that something
+            // is wrong -- and then let the commands answer for themselves.
+            if (all_tags.empty()) {
+                header_print_r("ERROR",
+                               "No models in " + this->list_path +
+                                   " run on this NPU (" + this->platform_ +
+                                   ") with the kernels this build has (" +
+                                   this->backend_summary() + ")");
             }
         }
+
+        /// \brief the NPU generation this catalog was filtered for
+        /// \return "aie2p" or "dev04"
+        const std::string& platform() const { return this->platform_; }
 
         /// \brief get the model info
         /// \param tag the tag of the model
@@ -83,26 +147,28 @@ class model_list {
                 for (const auto& [key, model] : this->config["models"][model_type].items()) {
                     if (key == model_size) { // if the size is found, return the model
                         model_found = true;
-                        return std::make_pair(new_tag, model);
+                        return std::make_pair(new_tag, this->resolve_source(new_tag, model));
                     }
                 } 
                 if (!model_found) {
+                    auto fallback = this->fallback_model();
                     if (last_error_tag != new_tag) {
                         last_error_tag = new_tag;
                         header_print_r("ERROR", "Model not found: " + model_size + " in subset " + model_type);
-                        header_print_r("ERROR", "Using default model: llama3.2-1B");
+                        header_print_r("ERROR", "Using default model: " + fallback.first);
                     }
-                    return std::make_pair("llama3.2:1b", this->config["models"]["llama3.2"]["1b"]);
+                    return fallback;
                 }
             }
             else{
+                auto fallback = this->fallback_model();
                 if (last_error_tag != new_tag) {
                     last_error_tag = new_tag;
-                    header_print_r("ERROR", "Model subset not found: " << model_type << "; using default model: llama3.2-1B");
+                    header_print_r("ERROR", "Model subset not found: " << model_type << "; using default model: " << fallback.first);
                 }
-                return std::make_pair("llama3.2:1b", this->config["models"]["llama3.2"]["1b"]);
+                return fallback;
             }
-            return std::make_pair("llama3.2:1b", this->config["models"]["llama3.2"]["1b"]);
+            return this->fallback_model();
         }
 
         /// \brief cut the tag, some program adds a prefix to the tag, like "Ollama/llama3.2-1B", we need to cut the prefix
@@ -123,9 +189,27 @@ class model_list {
             std::string new_tag = this->cut_tag(original_tag);
             // check if size is specified
             if (new_tag.find(':') == std::string::npos) {
-                // get the first size in the subset
-                std::string model_type = new_tag;
-                std::string model_size = this->config["models"][model_type].begin().key();
+                const std::string model_type = new_tag;
+                // A family this build has no kernels for (or a misspelled one) has no
+                // sizes to pick from. Return the tag untouched so get_model_info
+                // reports it rather than dereferencing a null subset.
+                const auto& models = this->config["models"];
+                if (!models.contains(model_type) || models.at(model_type).empty()) {
+                    return new_tag;
+                }
+                // The first size in the subset, preferring built-in sizes: overlay
+                // validation only sees the unfiltered catalog, so once the
+                // platform filter drops a family's first built-in size an
+                // extension size could otherwise take over the bare tag.
+                const auto& sizes = models.at(model_type);
+                std::string model_size = sizes.begin().key();
+                for (const auto& [size, entry] : sizes.items()) {
+                    (void)entry;
+                    if (this->builtin_tags_.count(model_type + ":" + size)) {
+                        model_size = size;
+                        break;
+                    }
+                }
                 new_tag = model_type + ":" + model_size;
             }
             return new_tag;
@@ -165,6 +249,7 @@ class model_list {
             for (const auto& [model_type, model_subset] : this->config["models"].items()) {
                 if (model_type == "whisper-v3") continue;
                 else if (model_type == "embed-gemma") continue;
+                else if (model_type == "d3") continue;   // decision models answer /v1/systemone only
                 for (const auto& [size, model_info] : model_subset.items()) {
                     nlohmann::json model_entry = {
                         {"name", model_type + ":" + size},
@@ -195,6 +280,7 @@ class model_list {
             for (const auto& [model_type, model_subset] : this->config["models"].items()) {
                 if (model_type == "whisper-v3") continue;
                 else if (model_type == "embed-gemma") continue;
+                else if (model_type == "d3") continue;   // decision models answer /v1/systemone only
                 for (const auto& [size, model_info] : model_subset.items()) {
                     // id uses the same "type:size" convention; created uses current epoch seconds
                     nlohmann::json model_entry = {
@@ -221,13 +307,368 @@ class model_list {
             return full_path.string();
         }
 
+        /// \brief the tag a tag depends on, if it names one
+        /// \param tag the tag of the model
+        /// \return the rectified base tag; nullopt for an ordinary model
+        /// \note One level only (validate_base_models drops anything else). A
+        ///       tag with a base stores only its own files in its own folder
+        ///       (get_model_path); the base's folder holds everything else
+        ///       (get_load_path).
+        std::optional<std::string> get_base_model(const std::string& tag) const {
+            const auto entry = this->find_entry(this->rectify_model_tag(tag));
+            if (!entry || !entry->contains("base_model") || !entry->at("base_model").is_string()) {
+                return std::nullopt;
+            }
+            return this->rectify_model_tag(entry->at("base_model").get<std::string>());
+        }
+
+        /// \brief the tags that name this tag as their base
+        /// \param tag the tag of the base model
+        std::vector<std::string> get_dependants(const std::string& tag) const {
+            const std::string base = this->rectify_model_tag(tag);
+            std::vector<std::string> out;
+            for (const auto& [model_type, model_subset] : this->config["models"].items()) {
+                for (const auto& [size, model_info] : model_subset.items()) {
+                    const std::string dependant = model_type + ":" + size;
+                    const auto own_base = this->get_base_model(dependant);
+                    if (own_base && *own_base == base) out.push_back(dependant);
+                }
+            }
+            return out;
+        }
+
+        /// \brief the folder a model is loaded from
+        /// \param tag the tag of the model
+        /// \return the base model's folder for a tag with a base_model, else
+        ///         the tag's own folder (get_model_path)
+        /// \note Config, tokenizer, chat template and the main weights come from
+        ///       here; load paths (runner, server, benchmark) use this, the
+        ///       downloader keeps using get_model_path.
+        std::string get_load_path(const std::string& tag) {
+            if (const auto base = this->get_base_model(tag)) return this->get_model_path(*base);
+            return this->get_model_path(tag);
+        }
+
         bool is_model_supported(const std::string& tag) {
             return all_tags.find(tag) != all_tags.end();
+        }
+
+        /// \brief pin which source get_model_info resolves a tag to
+        /// \param tag the tag of the model
+        /// \param preferred true for the preferred source, false for the entry's
+        ///        own, nullopt to go back to deciding by what is on disk
+        /// \note A pull has to settle the source before it looks at anything,
+        ///       since the source decides which files the model has; outside a
+        ///       pull the files on disk are what say which source was pulled.
+        void choose_source(const std::string& tag, std::optional<bool> preferred) {
+            const std::string new_tag = this->rectify_model_tag(tag);
+            if (preferred) this->source_choice_[new_tag] = *preferred;
+            else this->source_choice_.erase(new_tag);
+        }
+
+        /// \brief the files the preferred source has and the entry's own does not
+        /// \param tag the tag of the model
+        /// \return empty when the entry names no preferred source
+        std::vector<std::string> preferred_source_files(const std::string& tag) const {
+            const auto entry = this->find_entry(this->rectify_model_tag(tag));
+            if (!entry || !entry->contains("preferred_source")) return {};
+            return files_only_in(entry->at("preferred_source"), *entry);
         }
         
     private:
         std::string list_path;
         nlohmann::json config;
         std::string model_root_path;
+        std::string platform_;
+        /// \brief the source a pull has settled on, by tag
+        std::map<std::string, bool> source_choice_;
+        /// \brief the backend ids this build links
+        /// \note Spelled as plain strings rather than reached through
+        ///       flm::backend: AutoModel/model_backend.hpp pulls in causal_lm
+        ///       and the NPU runtime headers, and keeping those out is what
+        ///       lets this class be unit tested without an XRT toolchain. The
+        ///       key name mirrors flm::backend::kBackendKey.
+        std::vector<std::string> backends_;
+        /// \brief providers available for each family/backend contract
+        backend_provider_inventory_t backend_providers_;
+        /// \brief tags of the built-in catalog, before any overlay merged
+        /// \note Empty when no overlay is installed.
+        std::unordered_set<std::string> builtin_tags_;
+
+        void merge_catalog_overlay(
+            const flm::catalog::ModelCatalogOverlay& overlay,
+            const std::vector<std::string>& frontends) {
+            const auto reserved_tags = flm::catalog::model_catalog_tags(
+                this->config, this->list_path);
+            flm::catalog::validate_model_catalog_overlay(
+                overlay, frontends, this->backend_providers_,
+                reserved_tags);
+            flm::catalog::validate_model_catalog_overlay_folders(
+                overlay, this->config);
+            auto merged = this->config;
+            auto& models = merged["models"];
+            for (const auto& [model_type, sizes] :
+                 overlay.document["models"].items()) {
+                for (const auto& [size, entry] : sizes.items()) {
+                    models[model_type][size] = entry;
+                }
+            }
+            this->config = std::move(merged);
+        }
+
+        void rebuild_tags() {
+            this->all_tags.clear();
+            for (const auto& [model_type, sizes] :
+                 this->config["models"].items()) {
+                this->all_tags.insert(model_type);
+                for (const auto& [size, model_info] : sizes.items()) {
+                    (void)model_info;
+                    this->all_tags.insert(model_type + ":" + size);
+                }
+            }
+        }
+
+        /// \brief the backend ids, rendered for an error message
+        std::string backend_summary() const {
+            std::string joined;
+            for (const auto& id : this->backends_) {
+                if (!joined.empty()) joined += ", ";
+                joined += id;
+            }
+            return joined.empty() ? std::string("none") : joined;
+        }
+
+        /// \brief the raw catalog entry for a rectified "family:size" tag
+        const nlohmann::json* find_entry(const std::string& tag) const {
+            const auto colon = tag.find(':');
+            if (colon == std::string::npos) return nullptr;
+            const auto& models = this->config["models"];
+            const auto family = models.find(tag.substr(0, colon));
+            if (family == models.end()) return nullptr;
+            const auto entry = family->find(tag.substr(colon + 1));
+            return entry == family->end() ? nullptr : &*entry;
+        }
+
+        static std::vector<std::string> files_only_in(const nlohmann::json& overlay,
+                                                      const nlohmann::json& entry) {
+            std::vector<std::string> own;
+            if (!overlay.contains("files")) return own;
+            const auto& base = entry.value("files", nlohmann::json::array());
+            for (const auto& file : overlay.at("files")) {
+                if (std::find(base.begin(), base.end(), file) == base.end()) {
+                    own.push_back(file.get<std::string>());
+                }
+            }
+            return own;
+        }
+
+        /// \brief an entry as the source it resolves to
+        /// \param tag the rectified tag
+        /// \param entry the raw catalog entry
+        /// \note "preferred_source" is a JSON merge patch over the entry. It
+        ///       applies when a pull chose it, or else when every file only it
+        ///       has is on disk: downloads land under their final name only once
+        ///       verified, so a present file is a pulled one.
+        nlohmann::json resolve_source(const std::string& tag, nlohmann::json entry) const {
+            entry = this->resolve_source_impl(tag, std::move(entry));
+            // A tag with a base_model is loaded from the base's folder; tell the
+            // engine side where its own files are and which xclbin folder is its.
+            if (entry.contains("base_model") && entry.at("base_model").is_string() &&
+                entry.contains("name")) {
+                const std::string base_tag = this->rectify_model_tag(entry.at("base_model").get<std::string>());
+                entry["base_model"] = base_tag;
+                if (const auto base = this->find_entry(base_tag); base && base->contains("name")) {
+                    entry["base_model_path"] =
+                        (std::filesystem::path(this->model_root_path) / base->at("name").get<std::string>()).string();
+                }
+                entry["draft_model_path"] =
+                    (std::filesystem::path(this->model_root_path) / entry.at("name").get<std::string>()).string();
+                // The dependant's own folder unless the entry names another: qwen3.8-dflash2 runs the base model's
+                // kernels (the draft package adds weights only), so it points at the base's folder instead of
+                // carrying a copy of every xclbin.
+                if (!entry.contains("xclbin_folder")) entry["xclbin_folder"] = entry.at("name");
+            }
+            return entry;
+        }
+
+        /// \brief drop dependants whose base is not a catalog entry of its own
+        void validate_base_models() {
+            std::vector<std::pair<std::string, std::string>> bad;
+            for (const auto& [model_type, model_subset] : this->config["models"].items()) {
+                for (const auto& [size, model_info] : model_subset.items()) {
+                    if (!model_info.contains("base_model")) continue;
+                    const std::string tag = model_type + ":" + size;
+                    const std::string base = model_info.at("base_model").is_string()
+                        ? this->rectify_model_tag(model_info.at("base_model").get<std::string>()) : std::string();
+                    const auto base_entry = base.empty() ? nullptr : this->find_entry(base);
+                    if (!base_entry || base == tag || base_entry->contains("base_model")) {
+                        bad.emplace_back(model_type, size);
+                        header_print_r("ERROR", "Ignoring " + tag + ": base_model '" + base +
+                                       "' must be another catalog entry without a base_model");
+                    }
+                }
+            }
+            for (const auto& [model_type, size] : bad) {
+                this->config["models"][model_type].erase(size);
+                if (this->config["models"][model_type].empty()) this->config["models"].erase(model_type);
+            }
+        }
+
+        nlohmann::json resolve_source_impl(const std::string& tag, nlohmann::json entry) const {
+            const auto preferred = entry.find("preferred_source");
+            if (preferred == entry.end()) return entry;
+            const nlohmann::json overlay = *preferred;
+            entry.erase(preferred);
+
+            bool use_preferred;
+            if (const auto chosen = this->source_choice_.find(tag);
+                chosen != this->source_choice_.end()) {
+                use_preferred = chosen->second;
+            } else {
+                const auto own = files_only_in(overlay, entry);
+                const auto root = std::filesystem::path(this->model_root_path) /
+                                  entry.at("name").get<std::string>();
+                use_preferred = !own.empty() &&
+                    std::all_of(own.begin(), own.end(), [&](const std::string& file) {
+                        std::error_code error;
+                        return std::filesystem::is_regular_file(root / file, error);
+                    });
+            }
+            if (use_preferred) entry.merge_patch(overlay);
+            return entry;
+        }
+
+        /// \brief legacy backend inference for entries without an explicit key
+        /// \param model_type the family part of the tag, e.g. "phi4-mini-it-core"
+        /// \return "core" for "-core", "oga-hipep" for "-oga-hipep", "flm" otherwise
+        /// \note Extension overlays require explicit backend and provider keys.
+        ///       This fallback preserves compatibility with the shipped catalog.
+        static std::string backend_for_family(const std::string& model_type) {
+            return flm::catalog::backend_for_model_type(model_type);
+        }
+
+        /// \brief whether an entry claims support for this machine's silicon
+        /// \param entry the size entry
+        /// \param tag the "family:size" tag, used only in error messages
+        /// \return true if the entry runs on this->platform_
+        /// \note An entry that says nothing runs on every generation. The
+        ///       shipped catalog names one on every entry, because artifacts
+        ///       are built for a generation and saying so is how a model that
+        ///       cannot run here fails at validation rather than deep inside a
+        ///       kernel; the default is what keeps an older catalog, or a
+        ///       hand-made development tree, readable.
+        bool entry_supports(const nlohmann::json& entry, const std::string& tag) const {
+            const auto supported = entry.find("supported_platforms");
+            if (supported == entry.end()) return true;
+            if (!supported->is_array() || supported->empty()) {
+                throw std::runtime_error(
+                    "supported_platforms must be a non-empty array: " + tag);
+            }
+            for (const auto& value : *supported) {
+                if (!value.is_string()) {
+                    throw std::runtime_error(
+                        "supported_platforms must contain strings: " + tag);
+                }
+                if (value.get<std::string>() == this->platform_) return true;
+            }
+            return false;
+        }
+
+        /// \brief whether this build links a given kernel flow
+        bool build_has(const std::string& id) const {
+            for (const auto& have : this->backends_) {
+                if (have == id) return true;
+            }
+            return false;
+        }
+
+        bool build_has_provider(
+            const std::string& family, const std::string& backend,
+            const std::string& provider) const {
+            const auto family_entry = this->backend_providers_.find(family);
+            if (family_entry == this->backend_providers_.end()) return false;
+            const auto backend_entry =
+                family_entry->second.find(backend);
+            if (backend_entry == family_entry->second.end()) return false;
+            return std::find(
+                       backend_entry->second.begin(),
+                       backend_entry->second.end(), provider) !=
+                   backend_entry->second.end();
+        }
+
+        /// \brief Drop entries this build cannot run and materialize their
+        ///        exact backend/provider selection.
+        /// \note Shipped entries may use the legacy tag-based backend fallback;
+        ///       extension overlays name both values explicitly. Platform
+        ///       metadata is erased after filtering because execution no longer
+        ///       needs it.
+        void apply_support_filter() {
+            std::vector<std::string> empty_families;
+
+            for (auto& [model_type, model_subset] : this->config["models"].items()) {
+                std::vector<std::string> unsupported_sizes;
+
+                for (auto& [size, model_info] : model_subset.items()) {
+                    const std::string tag = model_type + ":" + size;
+                    if (flm::catalog::model_kind(model_info) == flm::catalog::kEmbeddingModelKind) {
+                        if (!entry_supports(model_info, tag)) unsupported_sizes.push_back(size);
+                        else model_info.erase("supported_platforms");
+                        continue;
+                    }
+                    const std::string backend = model_info.value(
+                        flm::backend::kBackendKey,
+                        backend_for_family(model_type));
+                    const std::string provider = model_info.value(
+                        flm::backend::kBackendProviderKey,
+                        std::string(flm::backend::kBuiltinProviderId));
+                    const bool selects_provider =
+                        model_info.contains(
+                            flm::backend::kBackendProviderKey);
+                    if (!entry_supports(model_info, tag) ||
+                        (selects_provider &&
+                                 !this->backend_providers_.empty()
+                             ? !this->build_has_provider(
+                                   model_info["details"]["family"]
+                                       .get<std::string>(),
+                                   backend, provider)
+                             : !this->build_has(backend))) {
+                        unsupported_sizes.push_back(size);
+                        continue;
+                    }
+                    model_info.erase("supported_platforms");
+                    model_info[flm::backend::kBackendKey] = backend;
+                    model_info[flm::backend::kBackendProviderKey] = provider;
+                }
+
+                for (const auto& size : unsupported_sizes) model_subset.erase(size);
+                if (model_subset.empty()) empty_families.push_back(model_type);
+            }
+
+            for (const auto& model_type : empty_families) {
+                this->config["models"].erase(model_type);
+            }
+        }
+
+        /// \brief the entry to fall back on when a tag cannot be resolved
+        /// \return the fallback tag and its info
+        /// \note llama3.2:1b is the historical default, but it is pruned on
+        ///       silicon that cannot run it, so fall back to whatever survived.
+        std::pair<std::string, nlohmann::json> fallback_model() const {
+            const auto& models = this->config["models"];
+            if (models.contains("llama3.2") &&
+                models["llama3.2"].contains("1b")) {
+                return std::make_pair("llama3.2:1b",
+                                      this->resolve_source("llama3.2:1b", models["llama3.2"]["1b"]));
+            }
+            for (const auto& [model_type, model_subset] : models.items()) {
+                for (const auto& [size, model_info] : model_subset.items()) {
+                    const std::string tag = model_type + ":" + size;
+                    return std::make_pair(tag, this->resolve_source(tag, model_info));
+                }
+            }
+            throw std::runtime_error("No models available for NPU platform " +
+                                     this->platform_ + " with backends " +
+                                     this->backend_summary());
+        }
 
 };

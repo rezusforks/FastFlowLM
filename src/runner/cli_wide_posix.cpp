@@ -1,5 +1,5 @@
 /*
-*  Copyright (c) 2025 by Contributors
+*  Copyright (c) 2026 Advanced Micro Devices, Inc.
 *  \file cli_wide_posix.cpp
 *  \brief CLI interactive input implementation for non-Windows platforms
 *  \author FastFlowLM Team
@@ -11,6 +11,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstdlib>
+#include <clocale>
 #include <chrono>
 #include <thread>
 #ifndef _WIN32
@@ -20,13 +21,27 @@
 #include <unistd.h>
 #endif
 #ifdef FASTFLOWLM_USE_READLINE
-#include <readline/readline.h>
-#include <readline/history.h>
+// readline-compatible API from libedit (BSD-3-Clause), not GNU readline (GPL-3).
+#include <editline/readline.h>
 #endif
 
 #ifndef _WIN32
 
-CLIWide::CLIWide() = default;
+CLIWide::CLIWide() {
+#ifdef FASTFLOWLM_USE_READLINE
+    // libedit decodes keystrokes through the C library's multibyte functions,
+    // so it only accepts non-ASCII input (Cyrillic, CJK, ...) when LC_CTYPE is
+    // a UTF-8 locale. A C++ program starts in the "C" locale until it calls
+    // setlocale(), and newer libedit releases (e.g. Fedora 45) drop those bytes
+    // instead of passing them through. Adopt the user's LC_CTYPE before the
+    // first readline() call; fall back to C.UTF-8 if the environment names a
+    // locale that is not installed. Only LC_CTYPE is changed, so number
+    // parsing and formatting (LC_NUMERIC) keep the "C" behaviour.
+    if (!std::setlocale(LC_CTYPE, "")) {
+        std::setlocale(LC_CTYPE, "C.UTF-8");
+    }
+#endif
+}
 
 CLIWide::~CLIWide() = default;
 
@@ -347,6 +362,13 @@ std::string CLIWide::get_interactive_input() {
 void CLIWide::add_to_history(const std::string& command) {
     if (command.empty()) return;
 
+#ifdef FASTFLOWLM_USE_READLINE
+    // command_history.back() always mirrors the newest line-editor entry, so
+    // use it to skip consecutive duplicates rather than history_get(), whose
+    // indexing differs between libedit releases.
+    const bool same_as_last = !command_history.empty() && command_history.back() == command;
+#endif
+
     auto it = std::find(command_history.begin(), command_history.end(), command);
     if (it != command_history.end()) {
         command_history.erase(it);
@@ -359,8 +381,7 @@ void CLIWide::add_to_history(const std::string& command) {
     history_index = -1;
 
 #ifdef FASTFLOWLM_USE_READLINE
-    HIST_ENTRY* latest = (history_length > 0) ? history_get(history_length) : nullptr;
-    if (!latest || !latest->line || command != latest->line) {
+    if (!same_as_last) {
         add_history(command.c_str());
     }
 #endif

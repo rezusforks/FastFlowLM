@@ -58,7 +58,7 @@ static float reference[] = {
     4.077148e-02,   1.806641e-02,   1.843262e-02,   -2.661133e-02,  7.446289e-03,   3.768921e-03,   5.566406e-02,   -4.687500e-02,  -4.174805e-02,  1.531982e-02,   9.765625e-03,   2.343750e-02,   2.905273e-02,   2.246094e-02,   2.160645e-02,   5.859375e-03
 };
 // Model-specific factory function for Gemma3 Text family only
-inline std::pair<std::string, std::unique_ptr<AutoEmbeddingModel>> get_gemma_embedding_model(const std::string& model_tag, xrt::device* npu_device_inst) {
+inline std::pair<std::string, std::unique_ptr<AutoEmbeddingModel>> get_gemma_embedding_model(const std::string& model_tag, flm_rt::device* npu_device_inst) {
     static std::unordered_set<std::string> gemma_embedding_Tags = {
         "embed-gemma", "embed-gemma:300m"
     };
@@ -101,7 +101,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Model path: " << model_path << std::endl;
     std::cout << "Model info: " << model_info.dump() << std::endl;
 
-    auto npu_device_global = xrt::device(0);
+    auto npu_device_global = flm_rt::device(0);
 
     // Use model-specific factory
     std::unique_ptr<AutoEmbeddingModel> embedding = std::make_unique<Gemma_Embedding>(&npu_device_global);
@@ -113,7 +113,7 @@ int main(int argc, char* argv[]) {
     std::string text = "Alice's Adventures in Wonderland ALICE'S ADVENTURES IN WONDERLAND Lewis Carroll THE MILLENNIUM FULCRUM EDITION 3.0 CHAPTER I Down the Rabbit-HoleAlice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do:  once or twice she had peeped into the book her sister was reading, but it had no pictures or conversations in it, and what is the use of a book,'thought Alice without pictures or conversation?' So she was considering in her own mind (as well as she could, for the hot day made her feel very sleepy and stupid), whether the pleasure of making a daisy-chain would be worth the trouble of getting up and picking the daisies, when suddenly a White Rabbit with pink eyes ran close by her. There was nothing so VERY remarkable in that; nor did Alice think it so VERY much out of the way to hear the Rabbit say to itself, `Oh dear!  Oh dear!  I shall be late!'";
 
     time_utils::time_point start_time = time_utils::now();
-    auto y = embedding->embed(text, task_query);
+    auto y = embedding->embed({{"input", text}, {"task", "query"}, {"dimensions", std::size(reference)}}).values;
     buffer<bf16> y_bf16(y.size());
     for (int i = 0; i < y.size(); i++){
         y_bf16[i] = (bf16)y[i];
