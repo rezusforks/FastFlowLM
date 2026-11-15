@@ -69,6 +69,10 @@ Tool calling has been supported since `v0.9.26`.
 
 Please refer to the [model card](https://fastflowlm.com/docs/models/) to see whether tool calling is supported for each model.
 
+> 📘 Going further:
+> - [Reasoning, Tool Calls & Streaming](https://fastflowlm.com/docs/instructions/server/reasoning_and_tools/) explains exactly how tool calls and reasoning come back, streamed and not, plus an agent loop example.
+> - [Structured Output & tool_choice](https://fastflowlm.com/docs/instructions/server/structured_output/) shows how to force a call (`tool_choice="required"` or a named function), forbid one (`"none"`), limit a turn to one call (`parallel_tool_calls=False`), and get schema-valid JSON answers (`response_format`).
+
 ## 🐍 How to use tool calling with FLM via Python script
 
 This section walks through an end‑to‑end tool‑calling flow in both streaming and non‑streaming modes. 
@@ -117,7 +121,9 @@ messages = [
 ]
 
 ## Ask model; it should emit a tool call
-tool_calls = []
+## A streamed call arrives in pieces: its first delta carries id and name,
+## later deltas carry more of the arguments. Merge them by index.
+tool_calls = {}
 assistant_content = ""
 for chunk in client.chat.completions.create(
     model="qwen3-it:4b",
@@ -125,41 +131,49 @@ for chunk in client.chat.completions.create(
     tools=tools,
     stream=True,
 ):
+    if not chunk.choices:
+        continue
     delta = chunk.choices[0].delta
 
     # Collect assistant text (if any)
-    if hasattr(delta, "content") and delta.content is not None:
+    if delta.content:
         assistant_content += delta.content
 
-    # Collect tool call tokens
-    if hasattr(delta, "tool_calls") and delta.tool_calls is not None:
-        for tc in delta.tool_calls:
-            tool_calls.append(tc)
+    # Collect tool call pieces
+    for tc in delta.tool_calls or []:
+        call = tool_calls.setdefault(tc.index, {
+            "id": None, "type": "function",
+            "function": {"name": "", "arguments": ""},
+        })
+        if tc.id:
+            call["id"] = tc.id
+        if tc.function and tc.function.name:
+            call["function"]["name"] = tc.function.name
+        if tc.function and tc.function.arguments:
+            call["function"]["arguments"] += tc.function.arguments
+
+tool_calls = [tool_calls[i] for i in sorted(tool_calls)]
 
 
 # Step 2:
 ## Add assistant message (with tool calls) to messages
-messages.append(
-    {
-        "role": "assistant",
-        "content": assistant_content,      # may be None
-        "tool_calls": tool_calls # important: keep tool_calls
-    }
-)
+assistant_msg = {"role": "assistant", "content": assistant_content or None}
+if tool_calls:
+    assistant_msg["tool_calls"] = tool_calls # important: keep tool_calls
+messages.append(assistant_msg)
 
 ## Execute tool calls and add tool call outputs back
-if tool_calls:
-    for tc in tool_calls:
-        if tc.function.name == "get_temperature":
-            args = json.loads(tc.function.arguments)
-            temp = get_temperature(args["city"])
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps({"temperature": temp}),
-                }
-            )
+for tc in tool_calls:
+    if tc["function"]["name"] == "get_temperature":
+        args = json.loads(tc["function"]["arguments"])
+        temp = get_temperature(args["city"])
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": json.dumps({"temperature": temp}),
+            }
+        )
 
 print("Messages so far:")
 print(messages)
@@ -172,9 +186,8 @@ for chunk in client.chat.completions.create(
     tools=tools,
     stream=True,
 ):
-    delta = chunk.choices[0].delta
-    if hasattr(delta, "content") and delta.content is not None:
-        print(delta.content, end="", flush=True)
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
 
 ```
 
@@ -271,7 +284,7 @@ print(resp2.choices[0].message.content)
 ```
 
 ## 🕸️ How to use tool calling with FLM in Open WebUI (Stream Mode Only)
-### 🛠️ How to setup and use a tool
+### 🛠️ How to set up and use a tool
 
 1. Follow the quick Open WebUI setup guide [here](https://fastflowlm.com/docs/instructions/server/webui/#-run-open-webui-with-fastflowlm).
 
@@ -325,7 +338,7 @@ Here we recommend some useful tools and walk you through their step‑by‑step 
    - Save your changes and copy the generated API key.
 
 
-2. Refer to the [tool-setup-guide](#how-to-setup-and-use-a-tool) to add and activate the `Play YouTube Video` tool.
+2. Refer to the [tool-setup-guide](#how-to-set-up-and-use-a-tool) to add and activate the `Play YouTube Video` tool.
 
 3. Use your `YouTube Data API v3` key:
     - In the **left sidebar** of Open WebUI, navigate to `Workspace`.

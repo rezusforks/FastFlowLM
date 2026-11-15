@@ -1,5 +1,5 @@
 /*!
- *  Copyright (c) 2023 by Contributors
+ *  Copyright (c) 2026 Advanced Micro Devices, Inc.
  * \file server.cpp
  * \brief WebServer class and related declarations
  * \author FastFlowLM Team
@@ -8,11 +8,90 @@
  */
 #include "server.hpp"
 #include "rest_handler.hpp"
+#include "utils/json_log.hpp"
 #include <sstream>
 #include <thread>
 #include <iostream>
 #include <iomanip>
 #include <locale>
+#include <array>
+
+namespace {
+/// Serialize an error body. Error text can carry raw request bytes (a parse error quotes the
+/// bytes it choked on), so invalid UTF-8 is replaced instead of throwing: a throwing dump here
+/// escapes into ioc.run() and permanently kills that I/O thread.
+std::string dump_error_body(const json& body) {
+    return body.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+/// Reject a connection over the connection limit with a real HTTP 503 instead of a bare close.
+/// The request is not read; after the reply the write side is shut down and the read side is
+/// drained (bounded by a timer) so the kernel does not answer unread request bytes with a RST.
+struct ConnectionRejecter : std::enable_shared_from_this<ConnectionRejecter> {
+    // The io_context runs on several threads: a strand keeps the timeout's close() from
+    // racing the write/read handlers on the same socket.
+    net::strand<net::any_io_executor> strand;
+    tcp::socket socket;
+    net::steady_timer timer;
+    std::string reply;
+    std::array<char, 4096> sink{};
+
+    explicit ConnectionRejecter(tcp::socket s)
+        : strand(net::make_strand(s.get_executor())), socket(std::move(s)), timer(strand) {}
+
+    /// cors_wildcard: write "Access-Control-Allow-Origin: *". The request is never read, so its
+    /// Origin is unknown; only a server configured to allow every origin can grant it here.
+    void start(size_t limit, bool cors_wildcard) {
+        const std::string body = dump_error_body(json{{"error", {
+            {"message", "Server is at its connection limit (" + std::to_string(limit) +
+                        "). Please try again later."},
+            {"type", "server_busy"},
+            {"code", 503}}}});
+        reply = std::string("HTTP/1.1 503 Service Unavailable\r\n"
+                "Content-Type: application/json\r\n"
+                "Retry-After: 1\r\n"
+                "Connection: close\r\n") +
+                (cors_wildcard ? "Access-Control-Allow-Origin: *\r\n" : "") +
+                "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+        auto self = shared_from_this();
+        timer.expires_after(std::chrono::seconds(5));
+        timer.async_wait(net::bind_executor(strand, [self](beast::error_code ec) {
+            if (!ec) { beast::error_code ignore; self->socket.close(ignore); }
+        }));
+        // Start the write on the strand too, so it is ordered against the timer handler.
+        net::dispatch(strand, [self] {
+            net::async_write(self->socket, net::buffer(self->reply),
+                net::bind_executor(self->strand, [self](beast::error_code ec, std::size_t) {
+                    if (ec) { self->finish(); return; }
+                    beast::error_code ignore;
+                    self->socket.shutdown(tcp::socket::shutdown_send, ignore);
+                    self->drain();
+                }));
+        });
+    }
+
+    void drain() {
+        auto self = shared_from_this();
+        socket.async_read_some(net::buffer(sink),
+            net::bind_executor(strand, [self](beast::error_code ec, std::size_t) {
+                if (ec) { self->finish(); return; }
+                self->drain();
+            }));
+    }
+
+    void finish() {
+        beast::error_code ignore;
+        timer.cancel();
+        socket.close(ignore);
+    }
+};
+
+/// Write the Access-Control-* headers http_guard chose (none with --cors 0).
+template <class Response>
+void set_cors_headers(Response& res, const flm::http_guard::HeaderList& headers) {
+    for (const auto& [name, value] : headers) res.set(name, value);
+}
+} // namespace
 
 
 // Global NPU access control
@@ -56,7 +135,7 @@ std::string utf8_truncate_middle(const std::string& input, size_t head_count, si
 }
 
 ///@brief brief print request
-///@param request the request
+///@param request the request, already parsed with json_log::parse (long strings cut)
 void brief_print_message_request(nlohmann::json request) {
     // if request has "messages" or "message" field, the context in meassages shall be printed briefly
     
@@ -80,7 +159,9 @@ void brief_print_message_request(nlohmann::json request) {
                             contentItem["text"] = utf8_truncate_middle(text, 10, 10);
                         }
                     }
-                    else if (contentItem.contains("type") && contentItem["type"] == "image_url") {
+                    else if (contentItem.contains("type") && contentItem["type"] == "image_url" &&
+                             contentItem["image_url"].is_object() && contentItem["image_url"].contains("url") &&
+                             contentItem["image_url"]["url"].is_string()) {
                         std::string image_url = contentItem["image_url"]["url"].get<std::string>();
                         if (image_url.size() > 20) {
                             contentItem["image_url"]["url"] = utf8_truncate_middle(image_url, 10, 10);
@@ -119,7 +200,7 @@ void brief_print_message_request(nlohmann::json request) {
     }
 
     header_print("LOG", "Body: ");
-    std::string brief_body = request.dump(4);
+    std::string brief_body = json_log::dump(request);
     std::cout << brief_body << std::endl;
 }
 
@@ -156,19 +237,6 @@ int NPUAccessManager::get_active_npu_requests() {
     return g_npu_active_requests.load();
 }
 
-// Helper function to check if an endpoint requires NPU access
-bool requires_npu_access(const std::string& method, const std::string& path) {
-    // NPU-intensive endpoints that should be restricted to one user at a time
-    if (method == "POST") {
-        return path == "/api/generate" || 
-               path == "/api/chat" || 
-               path == "/v1/chat/completions" ||
-               path == "/v1/audio/transcriptions" ||
-               path == "/v1/embeddings";
-    }
-    return false;
-}
-
 ///@brief HttpSession class implementation
 ///@param socket the socket
 ///@param server the server
@@ -183,6 +251,18 @@ HttpSession::HttpSession(tcp::socket socket, WebServer& server)
     
     // Debug: Log TCP connection formation
     header_print("🔗 ", "TCP connection established - Remote: " + socket_.remote_endpoint().address().to_string() + ":" + std::to_string(socket_.remote_endpoint().port()));
+}
+
+///@brief destructor: a session never outlives its slot in the connection limit
+HttpSession::~HttpSession() {
+    release_connection();
+}
+
+///@brief release this connection's slot (idempotent; every close path may call it)
+void HttpSession::release_connection() {
+    if (!connection_released_.exchange(true)) {
+        server_.active_connections_.fetch_sub(1);
+    }
 }
 
 ///@brief start
@@ -201,7 +281,7 @@ void HttpSession::close_connection() {
         header_print("🔒 ", "TCP connection closing - Remote endpoint unavailable");
     }
     socket_.shutdown(tcp::socket::shutdown_both, ec);
-    server_.active_connections_.fetch_sub(1);
+    release_connection();
 }
 
 ///@brief read request
@@ -224,6 +304,8 @@ void HttpSession::read_request(bool cors) {
 
             // Handle body too large explicitly with 413
             if (ec == http::error::body_limit) {
+                // The header was read: keep it so the reply's CORS headers see the Origin.
+                self->req_ = parser->release();
                 self->res_ = {};
                 self->res_.version(11);
                 self->res_.result(http::status::payload_too_large);
@@ -242,13 +324,42 @@ void HttpSession::read_request(bool cors) {
             } catch (...) {
                 header_print("🔒 ", "TCP connection closed - Remote endpoint unavailable");
             }
-            self->server_.active_connections_.fetch_sub(1);
+            self->release_connection();
         });
 }
 
 ///@brief handle request
 
 void HttpSession::handle_request(bool cors) {
+    // --- Origin and Host checks, before anything else (preflight included) ---
+    // A web page may send "simple" requests here without a preflight, and they have effects
+    // (/api/pull, /api/cancel, model switches) even when the page cannot read the reply. A page
+    // from a foreign origin, or one reached through a foreign Host name (DNS rebinding), is
+    // refused before routing.
+    {
+        const auto& policy = server_.origin_policy();
+        const std::string origin(req_[http::field::origin]);
+        const std::string host(req_[http::field::host]);
+        const bool origin_ok = flm::http_guard::origin_allowed(policy, origin);
+        if (!origin_ok || !flm::http_guard::host_allowed(policy, host)) {
+            const std::string message = !origin_ok
+                ? "Origin '" + origin + "' is not allowed. Start flm serve with --cors-origins \"" + origin +
+                      "\" to allow it (\"*\" allows every origin)."
+                : "Host '" + host + "' is not allowed for a server bound to a loopback address. If a proxy "
+                  "forwards this name, add its origin to --cors-origins (e.g. \"https://" + host + "\").";
+            header_print("🚫 ", message);
+            res_ = {};
+            res_.version(req_.version());
+            res_.keep_alive(false);
+            res_.result(http::status::forbidden);
+            res_.set(http::field::content_type, "application/json");
+            res_.body() = dump_error_body(flm::http_guard::error_body(message, 403));
+            res_.prepare_payload();
+            write_response();
+            return;
+        }
+    }
+
     // --- BEGIN: Preflight (OPTIONS) request handling ---
     if (req_.method() == http::verb::options && cors) {
         header_print("✈️ ", "Handling Preflight (OPTIONS) request");
@@ -256,12 +367,11 @@ void HttpSession::handle_request(bool cors) {
         // reponse empty body for OPTIONS
         auto options_res = std::make_shared<http::response<http::empty_body>>();
         options_res->version(req_.version());
-        options_res->result(http::status::ok); 
+        options_res->result(http::status::ok);
         options_res->keep_alive(req_.keep_alive());
 
-        options_res->set("Access-Control-Allow-Origin", "*");
-        options_res->set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        options_res->set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+        set_cors_headers(*options_res, flm::http_guard::cors_headers(server_.origin_policy(),
+            req_[http::field::origin], req_[http::field::access_control_request_headers], true));
 
         options_res->prepare_payload();
         auto self = shared_from_this();
@@ -284,8 +394,40 @@ void HttpSession::handle_request(bool cors) {
     res_.version(req_.version());
     res_.keep_alive(req_.keep_alive());
 
-    // Handle the request through the server
-    bool deferred = server_.handle_request(req_, res_, socket_, shared_from_this());
+    // Handle the request through the server. Nothing may escape into ioc.run(): answer 500
+    // (or, mid-stream, drop the connection) instead of leaving the client without a reply.
+    bool deferred = false;
+    try {
+        deferred = server_.handle_request(req_, res_, socket_, shared_from_this());
+    } catch (const std::exception& e) {
+        header_print("LOG", "Unhandled exception in request: " + std::string(e.what()));
+        deferred = false;
+        if (!is_streaming_) {
+            res_ = {};
+            res_.version(req_.version());
+            res_.keep_alive(false);
+            res_.result(http::status::internal_server_error);
+            res_.set(http::field::content_type, "application/json");
+            res_.body() = dump_error_body(json{ {"error", std::string("Internal server error: ") + e.what()} });
+            res_.prepare_payload();
+        } else {
+            close_connection();
+        }
+    } catch (...) {
+        header_print("LOG", "Unknown unhandled exception in request");
+        deferred = false;
+        if (!is_streaming_) {
+            res_ = {};
+            res_.version(req_.version());
+            res_.keep_alive(false);
+            res_.result(http::status::internal_server_error);
+            res_.set(http::field::content_type, "application/json");
+            res_.body() = dump_error_body(json{ {"error", "Internal server error"} });
+            res_.prepare_payload();
+        } else {
+            close_connection();
+        }
+    }
 
     // Clear the buffer after processing to prevent data accumulation
     buffer_.consume(buffer_.size());
@@ -322,16 +464,15 @@ void HttpSession::write_response() {
 
     std::cout << "================================================" << std::endl;
 
-    res_.set("Access-Control-Allow-Origin", "*");
-    res_.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res_.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+    // Every non-streaming exit (normal, 4xx/5xx, 404, 413, 503 queue full) passes here.
+    set_cors_headers(res_, flm::http_guard::cors_headers(server_.origin_policy(), req_[http::field::origin]));
 
 
     http::async_write(socket_, res_,
         [self](beast::error_code ec, std::size_t) {
             self->socket_.shutdown(tcp::socket::shutdown_both, ec);
             // Decrement connection counter for non-keep-alive connections
-            self->server_.active_connections_.fetch_sub(1);
+            self->release_connection();
             try {
                 header_print("🔒 ", "TCP connection closed - Remote: " + self->socket_.remote_endpoint().address().to_string() + ":" + std::to_string(self->socket_.remote_endpoint().port()));
             }
@@ -408,9 +549,9 @@ void HttpSession::write_streaming_response(const json& data, bool is_final) {
         headers += "Cache-Control: no-cache\r\n";
         headers += "Connection: keep-alive\r\n";
         headers += "Transfer-Encoding: chunked\r\n";
-        headers += "Access-Control-Allow-Origin: *\r\n";
-        headers += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
-        headers += "Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With\r\n";
+        for (const auto& [name, value] : flm::http_guard::cors_headers(server_.origin_policy(), req_[http::field::origin])) {
+            headers += name + ": " + value + "\r\n";
+        }
         headers += "\r\n";
         
         // Send headers synchronously
@@ -466,10 +607,10 @@ void HttpSession::send_chunk_data(const json& data, bool is_final) {
         }
 
         //socket_.shutdown(tcp::socket::shutdown_both, ec);
-        //server_.active_connections_.fetch_sub(1);
 
         boost::system::error_code ignore_ec;
         socket_.close(ignore_ec);
+        release_connection();
         return;
     }
 
@@ -480,13 +621,20 @@ void HttpSession::send_chunk_data(const json& data, bool is_final) {
         header_print("🔒 ", "Closing TCP connection (streaming, non-keep-alive)");
         socket_.shutdown(tcp::socket::shutdown_both, ec);
         // Decrement connection counter for non-keep-alive connections
-        server_.active_connections_.fetch_sub(1);
+        release_connection();
     }
 }
 
 ///@brief WebServer implementation
 ///@param port the port
-WebServer::WebServer(std::string host, int port, bool cors) : acceptor(ioc, {net::ip::make_address(host), static_cast<unsigned short>(port)}), running(false), port(port), cors(cors) {}
+WebServer::WebServer(std::string host, int port, bool cors) : acceptor(ioc, {net::ip::make_address(host), static_cast<unsigned short>(port)}), running(false), port(port), cors(cors) {
+    origin_policy_.cors = cors;
+    // On a loopback bind a request must also name a local Host (DNS rebinding); a server bound
+    // to 0.0.0.0 or a LAN address is reached by names this process cannot know.
+    origin_policy_.check_host = flm::http_guard::is_loopback_bind(host);
+    boost::system::error_code ec;
+    origin_policy_.hostname = net::ip::host_name(ec);
+}
 
 ///@brief destructor
 WebServer::~WebServer() {
@@ -501,10 +649,18 @@ void WebServer::start() {
     // Run the I/O service on multiple threads for better concurrency
     for (size_t i = 0; i < io_thread_count_; ++i) {
         io_threads_.emplace_back([this]() {
-            try {
-                ioc.run();
-            } catch (const std::exception& e) {
-                header_print("LOG", "Error in WebServer I/O thread: " + std::string(e.what()));
+            // An exception escaping a handler unwinds run(); asio allows calling run() again, so
+            // keep this thread serving instead of losing one I/O thread per escaped exception.
+            for (;;) {
+                try {
+                    ioc.run();
+                    break;  // run() returned normally: the server is stopping
+                } catch (const std::exception& e) {
+                    header_print("LOG", "Error in WebServer I/O thread (continuing): " + std::string(e.what()));
+                } catch (...) {
+                    header_print("LOG", "Unknown error in WebServer I/O thread (continuing)");
+                }
+                if (!running) break;
             }
         });
     }
@@ -571,9 +727,8 @@ void WebServer::do_accept() {
             if (!ec) {
                 // Check connection limit
                 if (active_connections_.load() >= max_connections_) {
-                    header_print("LOG", "Connection limit reached (" + std::to_string(max_connections_) + "), rejecting new connection");
-                    // Close the socket and continue accepting
-                    socket.close();
+                    header_print("LOG", "Connection limit reached (" + std::to_string(max_connections_) + "), rejecting new connection with 503");
+                    std::make_shared<ConnectionRejecter>(std::move(socket))->start(max_connections_, origin_policy_.cors && origin_policy_.allow_any);
                 } else {
                     // Increment connection counter
                     active_connections_.fetch_add(1);
@@ -591,37 +746,15 @@ void WebServer::do_accept() {
 
 ///@brief process_next_npu_request Handles one queued NPU task at a time
 void WebServer::process_next_npu_request() {
-    {
-        std::lock_guard<std::mutex> lock(npu_queue_mutex_);
-    if (npu_request_queue_.empty()) {
-        NPUAccessManager::release_npu_access();
-        return; // Queue is empty, NPU is free
-    }
-    }
-
-    // NPU cooldown before running the next queued task.
-    constexpr auto npu_cooldown = std::chrono::milliseconds(333);
-    std::this_thread::sleep_for(npu_cooldown);
-
-    std::function<void()> task;
-    size_t remaining = 0;
-    {
-        std::lock_guard<std::mutex> lock(npu_queue_mutex_);
-        if (npu_request_queue_.empty()) {
-            NPUAccessManager::release_npu_access();
-            return;
-        }
-
-        task = npu_request_queue_.front();
-        npu_request_queue_.pop();
-        remaining = npu_request_queue_.size();
-    }
-
-    header_print("🟡 ", "Dequeuing NPU request (" + std::to_string(remaining) + " remaining)...");
-
-    // Post the task to be executed by the io_context
-    net::post(ioc, task);
- 
+    npu_request_coordinator_.complete_current(
+        [this](NPURequestCoordinator::Task task) {
+            const auto remaining = npu_request_coordinator_.size();
+            header_print("🟡 ", "Dequeuing NPU request (" +
+                std::to_string(remaining) + " remaining)...");
+            net::post(ioc, std::move(task));
+        },
+        [] { NPUAccessManager::release_npu_access(); },
+        std::chrono::milliseconds(333));
 }
 
 ///@brief handle request
@@ -648,9 +781,11 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             std::string content_type = std::string(req[http::field::content_type]);
 
             if (content_type.find("application/json") != std::string::npos) {
-                json request_json_log = json::parse(req.body());
-                brief_print_message_request(request_json_log);
+                // Decide on the Content-Type, not on whether this log-only parse succeeds:
+                // a malformed body must still reach the parse below and get its 400.
                 is_json = true;
+                // cut long strings (image / audio data) as they are read: never logged, nor copied, whole
+                brief_print_message_request(json_log::parse(req.body()));
             }
             else if (content_type.find("multipart/form-data") != std::string::npos) {
                 // print some request info 
@@ -658,38 +793,43 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
         }
     }
     catch (const std::exception& e) {
-        header_print("LOG", "Error parsing request body: " + std::string(e.what()));
+        header_print("LOG", "Error parsing request body: " + json_log::what(e));
     }
 
     // Route lookup
-    std::string key = std::string(req.method_string()) + " " + std::string(req.target());
+    // Routes match on the path alone: "/v1/models?x=1" and "/v1/models/" are "/v1/models".
+    const std::string path = flm::http_guard::route_path(std::string_view(req.target().data(), req.target().size()));
+    std::string key = std::string(req.method_string()) + " " + path;
     auto it = routes.find(key);
     if (it == routes.end()) {
         // No route: respond 404 synchronously.
         res.result(http::status::not_found);
-        res.body() = json{ {"error", "Not Found"} }.dump();
-        res.set(http::field::content_type, is_json ? "application/json" : "multipart/form-data");
+        res.body() = dump_error_body(json{ {"error", "Not Found"} });
+        res.set(http::field::content_type, "application/json");
         res.prepare_payload();
         return false; 
     }
 
     // Decide if this handler needs exclusive NPU access.
-    bool needs_npu = requires_npu_access(std::string(req.method_string()), std::string(req.target()));
+    bool needs_npu = requires_npu_access(std::string(req.method_string()), path);
 
     // Store stable pointers for deferred execution to avoid reference lifetime issues.
     auto* req_ptr = &req;
     auto* res_ptr = &res;
 
     // Define a task lambda with is_deferred flag
-    auto process_task = [this, it, req_ptr, res_ptr, session, needs_npu, key, is_json](bool is_deferred) {
+    auto process_task = [this, it, req_ptr, res_ptr, session, needs_npu, key, path, is_json](bool is_deferred) {
         auto& req_ref = *req_ptr;
         auto& res_ref = *res_ptr;
+        NPURequestCompletionGuard completion([this, needs_npu] {
+            if (needs_npu) process_next_npu_request();
+        });
 
         // Parse JSON request body
         json request_json;
         try {
             if (!req_ref.body().empty()) {
-                if(is_json)
+                if(is_json && !reads_raw_body(std::string(req_ref.method_string()), path))
                     request_json = json::parse(req_ref.body());
                 //else 
                     //do some parse to the MultiPart request?
@@ -697,17 +837,17 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             }
         }
         catch (const std::exception& e) {
+            header_print("LOG", "Invalid JSON request body: " + json_log::what(e));
             res_ref.result(http::status::bad_request);
-            res_ref.body() = json{ {"error", "Invalid JSON"} }.dump();
+            res_ref.body() = dump_error_body(json{ {"error", {
+                {"message", "Invalid JSON: " + json_log::what(e)},
+                {"type", "invalid_request_error"},
+                {"code", 400}}} });
             res_ref.set(http::field::content_type, "application/json");
             res_ref.prepare_payload();
 
             // Only write from callback when deferred
             if (is_deferred && session) session->write_response_from_callback();
-
-            if (needs_npu) {
-                this->process_next_npu_request();
-            }
             return;
         }
 
@@ -715,8 +855,9 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
         session->set_cancellation_token(cancellation_token);
 
         std::string request_id;
-        if (request_json.contains("request_id")) {
-            request_id = request_json["request_id"];
+        if (request_json.is_object() && request_json.contains("request_id") &&
+            request_json["request_id"].is_string()) {
+            request_id = request_json["request_id"].get<std::string>();
         }
         else {
             static std::atomic<int> counter{ 0 };
@@ -730,29 +871,42 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             auto& response_ref = *res_ptr;
             http::status status = http::status::ok;
 
+            // An OpenAI style error carries its HTTP status as error.code: 400, 404, 500, ...
             if (response_data.contains("error") &&
-                response_data["error"].contains("code"))
+                response_data["error"].contains("code") &&
+                response_data["error"]["code"].is_number_integer())
             {
                 int code = response_data["error"]["code"].get<int>();
 
-                if (code == 400) {
-                    status = http::status::bad_request;
+                if (code >= 400 && code <= 599) {
+                    status = static_cast<http::status>(code);
                 }
-                //else if () {
-
-                //}
             }
 
+            // A handler that owns its status (System One: 422 {"detail": ...}) wraps its reply as
+            // {"__http_status": code, "__http_body": body}.
+            const json* body_data = &response_data;
+            if (response_data.is_object() && response_data.contains("__http_status")) {
+                status = static_cast<http::status>(response_data["__http_status"].get<int>());
+                body_data = &response_data["__http_body"];
+            }
             response_ref.result(status);
-            response_ref.body() = response_data.dump();
-            response_ref.set(http::field::content_type, "application/json");
+            if (body_data != &response_data) {
+                response_ref.body() = body_data->dump(-1, ' ', false, json::error_handler_t::replace);
+                response_ref.set(http::field::content_type, "application/json");
+            }
+            else if (response_data.is_string()) {
+                // A plain-text body: the text, srt and vtt transcription formats.
+                response_ref.body() = response_data.get<std::string>();
+                response_ref.set(http::field::content_type, "text/plain; charset=utf-8");
+            }
+            else {
+                response_ref.body() = response_data.dump();
+                response_ref.set(http::field::content_type, "application/json");
+            }
             response_ref.prepare_payload();
             cancellation_token->complete();
             unregister_active_request(request_id);
-
-            if (needs_npu) {
-                this->process_next_npu_request();
-            }
 
             if (is_deferred && session) {
                 session->write_response_from_callback();
@@ -769,28 +923,41 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             }
             if (is_final) {
                 unregister_active_request(request_id);
-
-                if (needs_npu) {
-                    this->process_next_npu_request();
-                }
             }
         };
 
         try {
             it->second(req_ref, send_response, send_streaming_response, session, cancellation_token);
         }
+        catch (const json::parse_error& e) {
+            // A route that parses the body itself (any Content-Type) got a malformed one: 400.
+            // A parse error on anything else (model output, a file) stays a 500.
+            cancellation_token->complete();
+            unregister_active_request(request_id);
+
+            const bool bad_body = !json::accept(req_ref.body());
+            res_ref.result(bad_body ? http::status::bad_request : http::status::internal_server_error);
+            res_ref.body() = bad_body
+                ? dump_error_body(json{ {"error", {
+                    {"message", "Invalid JSON: " + json_log::what(e)},
+                    {"type", "invalid_request_error"},
+                    {"code", 400}}} })
+                : dump_error_body(json{ {"error", std::string("Handler exception: ") + e.what()} });
+            res_ref.set(http::field::content_type, "application/json");
+            res_ref.prepare_payload();
+
+            if (is_deferred && session) {
+                session->write_response_from_callback();
+            }
+        }
         catch (const std::exception& e) {
             cancellation_token->complete();
             unregister_active_request(request_id);
 
             res_ref.result(http::status::internal_server_error);
-            res_ref.body() = json{ {"error", std::string("Handler exception: ") + e.what()} }.dump();
+            res_ref.body() = dump_error_body(json{ {"error", std::string("Handler exception: ") + e.what()} });
             res_ref.set(http::field::content_type, "application/json");
             res_ref.prepare_payload();
-
-            if (needs_npu) {
-                this->process_next_npu_request();
-            }
 
             if (is_deferred && session) {
                 session->write_response_from_callback();
@@ -801,13 +968,9 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             unregister_active_request(request_id);
 
             res_ref.result(http::status::internal_server_error);
-            res_ref.body() = json{ {"error", "Unknown handler exception"} }.dump();
+            res_ref.body() = dump_error_body(json{ {"error", "Unknown handler exception"} });
             res_ref.set(http::field::content_type, "application/json");
             res_ref.prepare_payload();
-
-            if (needs_npu) {
-                this->process_next_npu_request();
-            }
 
             if (is_deferred && session) {
                 session->write_response_from_callback();
@@ -831,28 +994,25 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
         return false;
     }
 
-    //const int NPU_QUEUE_LIMIT = 10;
-    std::lock_guard<std::mutex> lock(npu_queue_mutex_);
-
-    if (npu_request_queue_.size() >= max_npu_queue_) {
+    if (!npu_request_coordinator_.try_enqueue([this, process_task]() {
+            process_task(true);
+        })) {
         res.result(http::status::service_unavailable);
-        res.body() = json{
-            {"error", "NPU is in use and request queue is full (limit: " + std::to_string(max_npu_queue_) + "). Please try again later."}
-        }.dump();
+        res.body() = dump_error_body(json{
+            {"error", "NPU is in use and request queue is full (limit: " +
+                std::to_string(npu_request_coordinator_.capacity()) +
+                "). Please try again later."}
+        });
         res.set(http::field::content_type, "application/json");
         res.prepare_payload();
         header_print("🚫 ", "NPU busy and queue full, request denied: " + key);
         return false;
     }
-    else {
-        // Create a new lambda to bind process_task(true)
-        npu_request_queue_.push([this, process_task]() {
-            process_task(true);
-            });
-        header_print("🕒 ", "NPU busy, request queued (" + std::to_string(npu_request_queue_.size()) + "/" + std::to_string(max_npu_queue_) + "): " + key);
 
-        return true;
-    }
+    header_print("🕒 ", "NPU busy, request queued (" +
+        std::to_string(npu_request_coordinator_.size()) + "/" +
+        std::to_string(npu_request_coordinator_.capacity()) + "): " + key);
+    return true;
 }
 
 ///@brief create lm server
@@ -861,9 +1021,11 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
 ///@param default_tag the default tag
 ///@param port the port
 ///@return the server
-std::unique_ptr<WebServer> create_lm_server(model_list& models, ModelDownloader& downloader, program_args_t& args) {
+std::unique_ptr<WebServer> create_lm_server(model_list& models, ModelDownloader& downloader, program_args_t& args,
+                                            flm_rt::device* npu_device) {
     auto server = std::make_unique<WebServer>(args.host, args.port, args.cors);
-    auto rest_handler = std::make_shared<RestHandler>(models, downloader, args);
+    server->set_cors_origins(args.cors_origins);
+    auto rest_handler = std::make_shared<RestHandler>(models, downloader, args, npu_device);
     
     // Register Ollama-compatible routes
     server->register_handler("POST", "/api/show",
@@ -925,7 +1087,8 @@ std::unique_ptr<WebServer> create_lm_server(model_list& models, ModelDownloader&
             if (!req.body().empty()) {
                 request_json = json::parse(req.body());
             }
-            rest_handler->handle_embeddings(request_json, send_response, send_streaming_response);
+            rest_handler->handle_embeddings(request_json, send_response, send_streaming_response,
+                    [&] { return cancellation_token && cancellation_token->cancelled(); });
         });
     
     server->register_handler("GET", "/api/tags",
@@ -1008,7 +1171,30 @@ std::unique_ptr<WebServer> create_lm_server(model_list& models, ModelDownloader&
                 if (!req.body().empty()) {
                     request_json = json::parse(req.body());
                 }
-                rest_handler->handle_embeddings(request_json, send_response, send_streaming_response);
+                rest_handler->handle_embeddings(request_json, send_response, send_streaming_response,
+                    [&] { return cancellation_token && cancellation_token->cancelled(); });
+        });
+
+    // System One decisions (d3:lite via --decision); /v1/decisions is the alias vLLM Semantic
+    // Router also accepts. The handler parses the raw body itself.
+    for (const char* path : {"/v1/systemone", "/v1/decisions"}) {
+        server->register_handler("POST", path,
+            [rest_handler](const http::request<http::string_body>& req,
+                std::function<void(const json&)> send_response,
+                std::function<void(const json&, bool)> send_streaming_response,
+                std::shared_ptr<HttpSession> session,
+                std::shared_ptr<CancellationToken> cancellation_token) {
+                    rest_handler->handle_systemone(req.body(), send_response);
+            });
+    }
+
+    server->register_handler("GET", "/v1/systemone/models",
+        [rest_handler](const http::request<http::string_body>& req,
+            std::function<void(const json&)> send_response,
+            std::function<void(const json&, bool)> send_streaming_response,
+            std::shared_ptr<HttpSession> session,
+            std::shared_ptr<CancellationToken> cancellation_token) {
+                rest_handler->handle_systemone_models(send_response);
         });
 
     server->register_handler("POST", "/v1/chat/completions",
@@ -1034,6 +1220,12 @@ std::unique_ptr<WebServer> create_lm_server(model_list& models, ModelDownloader&
                 json request_json;
                 request_json["model"] = parts["model"].content;
                 request_json["file"] = parts["file"].content;
+                for (const char* field : {"language", "prompt", "response_format"}) {
+                    auto it = parts.find(field);
+                    if (it != parts.end()) {
+                        request_json[field] = it->second.content;
+                    }
+                }
                 rest_handler->handle_openai_audio_transcriptions(request_json, send_response, send_streaming_response, cancellation_token);
         });
 
@@ -1070,8 +1262,12 @@ std::unique_ptr<WebServer> create_lm_server(model_list& models, ModelDownloader&
                 return;
             }
             
-            std::string request_id = request_json["request_id"];
-            
+            if (auto bad = flm::http_guard::validate_cancel_request_id(request_json)) {
+                send_response(*bad);
+                return;
+            }
+            const std::string request_id = request_json.at("request_id").get<std::string>();
+
             // Try to cancel the request
             bool cancelled = server_ptr->cancel_request(request_id);
             

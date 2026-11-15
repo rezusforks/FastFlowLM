@@ -10,8 +10,9 @@ sections:
     body: |
       FastFlowLM curates the most requested families and publishes tuned manifests under `flm pull <model>`.
       We validate every build on Ryzen™ AI laptops and provide matching cards—see them [here](/docs/models/).
-      The catalog already covers 22 models spanning Gemma3 (Vision), Qwen3, GPT-OSS-20B (MoE), DeepSeek-R1, Whisper
-      (Audio), MedGemma (Medical), and other leading open families.
+      The catalog already covers models spanning Qwen3.8 (27B, MTP and DFlash 2 speculative decoding), Qwen3.6 (MoE), Qwen3.5 (Vision), Gemma4 (omni), Nemotron Bolt (DFlash speculative decoding), Qwen3, GPT-OSS-20B (MoE), DeepSeek-R1, Whisper
+      (Audio), Hy-MT2 (Translation), MiniCPM-V 4.7 (Vision, 1B and 35B-A3B MoE), MedGemma (Medical), Decision 3.0 (d3-edge, d3-lite, d3-nano, d3-mini, d3-flash, d3-turbo, d3-ultra, the System One
+      decision model of vLLM Semantic Router), and other leading open families.
     ctas:
       - label: "View model docs"
         href: "/docs/models/"
@@ -22,15 +23,24 @@ sections:
         Each manifest describes quantization, context window, tokenizer, and recommended memory,
         so there are no surprises after download.
       pills:
-        - "LLaMA 3.x"
-        - "Gemma 3 (Vision)"
-        - "DeepSeek R-1"
+        - "Qwen3.8 (Vision, MTP and DFlash 2 speculative decoding)"
+        - "Qwen3.6 (Vision and MoE)"
+        - "Gemma 4 (omni)"
+        - "Nemotron Bolt (NVIDIA, tool use; DFlash speculative decoding)"
+        - "Qwen3.5 (Vision)"
         - "Qwen 3 (Vision)"
+        - "MiniCPM-V 4.7 (Vision, incl. 35B-A3B MoE)"
         - "GPT-OSS (MoE)"
-        - "LFM2 (Liquid AI)"
+        - "LFM2 / LFM3 (Liquid AI)"
         - "EmbeddingGemma (RAG)"
         - "Whisper (Audio)"
+        - "Hy-MT2 (Translation)"
+        - "SmolVLA (Robotics)"
+        - "Decision 3.0 (System One)"
         - "MedGemma (Medical)"
+        - "DeepSeek R-1"
+        - "LLaMA 3.x"
+       
         # - "xLAM-2 (Tool-calling, Salesforce), and their corresponding Chat Templates and major API (e.g., OpenAI-compatible API)"
 
   - type: two_column
@@ -47,11 +57,11 @@ sections:
       title: "Stay in the loop"
       ctas:
         - label: "Release notes"
-          href: "https://github.com/FastFlowLM/FastFlowLM/releases"
+          href: "https://github.com/ROCm/FastFlowLM/releases"
           style: primary
           external: true
         - label: "Discord"
-          href: "https://discord.gg/z24t23HsHF?utm_source=site"
+          href: "https://discord.com/invite/jtWZdMJ8ee?utm_source=site"
           style: ghost
           external: true
 ---

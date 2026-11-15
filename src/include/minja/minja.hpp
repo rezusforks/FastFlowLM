@@ -1351,6 +1351,14 @@ public:
               if (name == "iterable") return l.is_iterable();
               if (name == "sequence") return l.is_array();
               if (name == "defined") return !l.is_null();
+              // Upstream minja (commit 3e4c61c) implements `is defined` but not
+              // its negation, and throws on the test NAME before ever looking at
+              // the value -- so `x is undefined` fails even when x is set.
+              // VariableExpr::do_evaluate returns a null Value for a missing
+              // name, so this is the exact mirror of the line above.
+              // Qwen3.8-27B's chat template opens with
+              // `{%- if enable_thinking is undefined or enable_thinking is true %}`.
+              if (name == "undefined") return l.is_null();
               if (name == "true") return l.to_bool();
               if (name == "false") return !l.to_bool();
               throw std::runtime_error("Unknown type for 'is' operator: " + name);
@@ -1810,7 +1818,20 @@ private:
       if (it == end) return nullptr;
       if (*it == '"' || *it == '\'') {
         auto str = parseString();
-        if (str) return std::make_shared<Value>(*str);
+        if (str) {
+          // Python / Jinja2 implicit concatenation of adjacent string literals:
+          //   "foo " "bar"  ==  "foo bar"
+          std::string result = *str;
+          while (true) {
+            auto mark = it;
+            consumeSpaces();
+            if (it == end || (*it != '"' && *it != '\'')) { it = mark; break; }
+            auto next_str = parseString();
+            if (!next_str) { it = mark; break; }
+            result += *next_str;
+          }
+          return std::make_shared<Value>(result);
+        }
       }
       static std::regex prim_tok(R"(true\b|True\b|false\b|False\b|None\b)");
       auto token = consumeToken(prim_tok);

@@ -17,18 +17,52 @@ parent: Models
 
 ▶️ Run with FastFlowLM in PowerShell:  
 
-> Embedding model requires to use with an LLM (load concurrently) for Server Mode.
-> Embedding model does not work under CLI Mode.
+> Embedding models run in Server Mode, alone or alongside an LLM.
 
 ### Server Mode 
 
 Start with embedding model enabled:
 
 ```shell
-flm serve gemma3:4b --embed 1 # Load the embedding model (embed-gemma:300m) in the background, with concurrent LLM loading (gemma3:4b).
+flm serve gemma3:4b --embed embed-gemma:300m
 ```
 
-Send file(s) to `POST /v1/embeddings` via any OpenAI Client or Open WebUI.
+As a standalone embedding server (no LLM):
+
+```shell
+flm serve embed-gemma:300m
+```
+
+`--embed` / `-e` take an embedding model tag (see `flm list`); `1` selects the default (embed-gemma:300m) and `0` turns it off. An unknown tag, or the tag of a different kind of model, stops flm with an error.
+
+Send text to `POST /v1/embeddings` via an OpenAI client or Open WebUI. Set
+`model` to `embed-gemma:300m`; the server downloads and loads it when needed.
+
+### Request options
+
+`input` is a string or a non-empty array of strings, with one vector returned
+per string. Each vector has 768 dimensions; omit `dimensions` or set it to `768`.
+
+`task` is optional and case-sensitive. Omission or an empty string selects `query`:
+
+| Task | Prompt prefix |
+|---|---|
+| Default, `query` | `task: search result \| query: ` |
+| `document` | `title: <title> \| text: ` (`none` when omitted) |
+| `clustering` | `task: clustering \| query: ` |
+| `classification` | `task: classification \| query: ` |
+| `code_retrieval` | `task: code retrieval \| query: ` |
+| `sentence_similarity` | `task: sentence similarity \| query: ` |
+| `summarization` | `task: summarization \| query: ` |
+
+The optional `title` string is available with `task: "document"`:
+
+```json
+{"model":"embed-gemma:300m","input":"Paris is in France.","task":"document","title":"France","dimensions":768}
+```
+
+These options describe the built-in `embed-gemma:300m` model. For extension
+models, consult the provider's documentation.
 
 > see more API details here → [/v1/embeddings/](https://developers.openai.com/api/reference/python/resources/embeddings/methods/create)
 
