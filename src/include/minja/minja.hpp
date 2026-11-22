@@ -1351,6 +1351,14 @@ public:
               if (name == "iterable") return l.is_iterable();
               if (name == "sequence") return l.is_array();
               if (name == "defined") return !l.is_null();
+              // Upstream minja (commit 3e4c61c) implements `is defined` but not
+              // its negation, and throws on the test NAME before ever looking at
+              // the value -- so `x is undefined` fails even when x is set.
+              // VariableExpr::do_evaluate returns a null Value for a missing
+              // name, so this is the exact mirror of the line above.
+              // Qwen3.8-27B's chat template opens with
+              // `{%- if enable_thinking is undefined or enable_thinking is true %}`.
+              if (name == "undefined") return l.is_null();
               if (name == "true") return l.to_bool();
               if (name == "false") return !l.to_bool();
               throw std::runtime_error("Unknown type for 'is' operator: " + name);
@@ -1810,7 +1818,20 @@ private:
       if (it == end) return nullptr;
       if (*it == '"' || *it == '\'') {
         auto str = parseString();
-        if (str) return std::make_shared<Value>(*str);
+        if (str) {
+          // Python / Jinja2 implicit concatenation of adjacent string literals:
+          //   "foo " "bar"  ==  "foo bar"
+          std::string result = *str;
+          while (true) {
+            auto mark = it;
+            consumeSpaces();
+            if (it == end || (*it != '"' && *it != '\'')) { it = mark; break; }
+            auto next_str = parseString();
+            if (!next_str) { it = mark; break; }
+            result += *next_str;
+          }
+          return std::make_shared<Value>(result);
+        }
       }
       static std::regex prim_tok(R"(true\b|True\b|false\b|False\b|None\b)");
       auto token = consumeToken(prim_tok);
@@ -2729,8 +2750,42 @@ inline std::shared_ptr<Context> Context::builtins() {
   globals.set("raise_exception", simple_function("raise_exception", { "message" }, [](const std::shared_ptr<Context> &, Value & args) -> Value {
     throw std::runtime_error(args.at("message").get<std::string>());
   }));
-  globals.set("tojson", simple_function("tojson", { "value", "indent" }, [](const std::shared_ptr<Context> &, Value & args) {
-    return Value(args.at("value").dump(args.get<int64_t>("indent", -1), /* to_json= */ true));
+  // Upstream minja takes no ensure_ascii and throws on an argument it does not
+  // know, so `x | tojson(ensure_ascii=False)` failed the whole render.
+  // Laguna-2.1's chat template writes it for every non-string tool call
+  // argument. dump() keeps non-ASCII text as it is, which is ensure_ascii=False;
+  // ensure_ascii=True escapes it as json.dumps does, \uXXXX with surrogate pairs
+  // past U+FFFF.
+  globals.set("tojson", simple_function("tojson", { "value", "indent", "ensure_ascii" }, [](const std::shared_ptr<Context> &, Value & args) {
+    auto text = args.at("value").dump(args.get<int64_t>("indent", -1), /* to_json= */ true);
+    if (!args.get<bool>("ensure_ascii", false)) {
+      return Value(text);
+    }
+    static const char hex[] = "0123456789abcdef";
+    std::string out;
+    auto escape = [&](uint32_t unit) {
+      out += "\\u";
+      for (int shift = 12; shift >= 0; shift -= 4) out += hex[(unit >> shift) & 0xF];
+    };
+    for (size_t i = 0; i < text.size();) {
+      const auto lead = static_cast<unsigned char>(text[i]);
+      if (lead < 0x80) {
+        out += text[i++];
+        continue;
+      }
+      const size_t len = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
+      uint32_t code = lead & (0x7F >> len);
+      for (size_t k = 1; k < len && i + k < text.size(); ++k) code = (code << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+      i += len;
+      if (code >= 0x10000) {
+        code -= 0x10000;
+        escape(0xD800 + (code >> 10));
+        escape(0xDC00 + (code & 0x3FF));
+      } else {
+        escape(code);
+      }
+    }
+    return Value(out);
   }));
   globals.set("items", simple_function("items", { "object" }, [](const std::shared_ptr<Context> &, Value & args) {
     auto items = Value::array();

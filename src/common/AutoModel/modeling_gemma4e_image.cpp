@@ -9,7 +9,7 @@
 #include <utility>
 gemma4e_image_t Gemma4e::load_image(const std::string &filename)
 {
-    gemma4e_image_t empty_result;
+    gemma4e_image_t empty_result{};
     image_data_t decoded;
     image_data_t reordered;
     if (!image_reader_.load_image(filename, decoded))
@@ -35,7 +35,7 @@ gemma4e_image_t Gemma4e::load_image(const std::string &filename)
 
 gemma4e_image_t Gemma4e::load_image_base64(const std::string &base64_string)
 {
-    gemma4e_image_t empty_result;
+    gemma4e_image_t empty_result{};
     image_data_t decoded;
     image_data_t reordered;
     if (!image_reader_.load_image_base64(base64_string, decoded))
@@ -123,8 +123,8 @@ std::vector<uint8_t> Gemma4e::aspect_ratio_preserving_resize(
         image.width_resized = target_width;
         image.height_resized = target_height;
 
-        std::vector<uint8_t> result(channels * height * width);
-        memcpy(result.data(), image._data.data(), channels * height * width);
+        std::vector<uint8_t> result(static_cast<size_t>(channels) * height * width);
+        memcpy(result.data(), image._data.data(), static_cast<size_t>(channels) * height * width);
 
         image._data.free();
         return result;
@@ -175,20 +175,22 @@ void Gemma4e::preprocess_image(
 {
 
     //std::cout << "hit preprocess_image, image size: " << image.width << "x" << image.height << ", pixel count: " << (image.width * image.height) << std::endl;
-    gemma4e_npu *lm_engine_gemma4e_ptr = reinterpret_cast<gemma4e_npu *>(this->lm_engine.get());
-    int max_patches = this->image_softtoken_budget * lm_engine_gemma4e_ptr->GEMMA4E_POOLING_KERNEL_SIZE * lm_engine_gemma4e_ptr->GEMMA4E_POOLING_KERNEL_SIZE;
+    // Was a reinterpret_cast to gemma4e_npu, which silently misreads a gemma4e_flash
+    // engine; engine_config() dispatches to the right concrete type instead.
+    const gemma4e_engine_config_t engine_cfg = this->engine_config();
+    int max_patches = this->image_softtoken_budget * engine_cfg.GEMMA4E_POOLING_KERNEL_SIZE * engine_cfg.GEMMA4E_POOLING_KERNEL_SIZE;
 
     // first, do_resize
     std::vector<uint8_t> resized_image_data = aspect_ratio_preserving_resize(
         image,
-        lm_engine_gemma4e_ptr->GEMMA4E_VISION_PATCH_SIZE,
+        engine_cfg.GEMMA4E_VISION_PATCH_SIZE,
         max_patches,
-        lm_engine_gemma4e_ptr->GEMMA4E_POOLING_KERNEL_SIZE
+        engine_cfg.GEMMA4E_POOLING_KERNEL_SIZE
     );
 
     // step 2, rescale and normaliuze
-    std::vector<float> rescaled_and_normalized_bufer(  
-        image.width_resized * image.height_resized * 3
+    std::vector<float> rescaled_and_normalized_bufer(
+        static_cast<size_t>(image.width_resized) * image.height_resized * 3
     );
 
 
@@ -196,18 +198,18 @@ void Gemma4e::preprocess_image(
         resized_image_data.data(),
         rescaled_and_normalized_bufer.data(),
         image.width_resized, image.height_resized, 3,
-        true, lm_engine_gemma4e_ptr->GEMMA4E_VISION_RESCALE_FACTOR,
-        false, lm_engine_gemma4e_ptr->GEMMA4E_VISION_IMAGE_MEAN, lm_engine_gemma4e_ptr->GEMMA4E_VISION_IMAGE_STD
+        true, engine_cfg.GEMMA4E_VISION_RESCALE_FACTOR,
+        false, engine_cfg.GEMMA4E_VISION_IMAGE_MEAN, engine_cfg.GEMMA4E_VISION_IMAGE_STD
     );
 
-    auto patch_height = image.height_resized / lm_engine_gemma4e_ptr->GEMMA4E_VISION_PATCH_SIZE;
-    auto patch_width = image.width_resized / lm_engine_gemma4e_ptr->GEMMA4E_VISION_PATCH_SIZE;
+    auto patch_height = image.height_resized / engine_cfg.GEMMA4E_VISION_PATCH_SIZE;
+    auto patch_width = image.width_resized / engine_cfg.GEMMA4E_VISION_PATCH_SIZE;
     int num_patches = patch_height * patch_width;
-    int patch_size = lm_engine_gemma4e_ptr->GEMMA4E_VISION_PATCH_SIZE;
+    int patch_size = engine_cfg.GEMMA4E_VISION_PATCH_SIZE;
     int num_channels = 3;
     int elements_per_patch = patch_size * patch_size * num_channels;
 
-    std::vector<float> patches(num_patches * elements_per_patch);
+    std::vector<float> patches(static_cast<size_t>(num_patches) * elements_per_patch);
 
     {
         // the convert_image_to_parchtes operation in python
@@ -232,7 +234,7 @@ void Gemma4e::preprocess_image(
 
 
 
-        num_soft_tokens =  num_patches / (  lm_engine_gemma4e_ptr->GEMMA4E_POOLING_KERNEL_SIZE * lm_engine_gemma4e_ptr->GEMMA4E_POOLING_KERNEL_SIZE);
+        num_soft_tokens =  num_patches / (  engine_cfg.GEMMA4E_POOLING_KERNEL_SIZE * engine_cfg.GEMMA4E_POOLING_KERNEL_SIZE);
         
 
     }
@@ -240,7 +242,7 @@ void Gemma4e::preprocess_image(
 
     // now. step 5
   
-    image_grid_pairs.resize(num_patches * 2);
+    image_grid_pairs.resize(static_cast<size_t>(num_patches) * 2);
     for (int ph = 0; ph < patch_height; ++ph) {
         for (int pw = 0; pw < patch_width; ++pw) {
             int patch_idx = ph * patch_width + pw;
@@ -253,8 +255,8 @@ void Gemma4e::preprocess_image(
     // Step 6. Pad patches and positions to `max_patches`
     int padding_length = max_patches - num_patches;
     if (padding_length > 0) {
-        patches.resize(max_patches * elements_per_patch, 0.0f);
-        image_grid_pairs.resize(max_patches * 2, -1);
+        patches.resize(static_cast<size_t>(max_patches) * elements_per_patch, 0.0f);
+        image_grid_pairs.resize(static_cast<size_t>(max_patches) * 2, -1);
     }
 
 

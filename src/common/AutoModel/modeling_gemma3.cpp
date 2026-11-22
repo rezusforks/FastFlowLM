@@ -6,22 +6,17 @@
 /// \note This is a source file for the gemma3 class
 
 #include "AutoModel/modeling_gemma3.hpp"
+#include "models/gemma/flm/aie2p/gemma_npu.hpp"
+#if defined(FLM_ENABLE_OGA_HIPEP)
+#include "oga/oga_engine.hpp"
+#include "oga/oga_image_bytes.hpp"
+#endif
 
 /************              Gemma3 family            **************/
-Gemma3::Gemma3(xrt::device* npu_device_inst) : AutoModel(npu_device_inst, "Gemma3") {}
+Gemma3::Gemma3(flm_rt::device* npu_device_inst) : AutoModel(npu_device_inst, "Gemma3") {}
 
-void Gemma3::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption) {
-    this->_shared_load_model(model_path, model_info, default_context_length, enable_preemption);
-    
-    this->q4nx = std::make_unique<Q4NX>(this->model_path);
-    // model_type == gemma
-    this->lm_engine = std::make_unique<gemma_npu>(*this->lm_config, this->npu.get(), this->MAX_L);
-
-    this->lm_engine->load_weights(*this->q4nx);
-
-    //free the q4nx
-    this->q4nx.reset();
-    this->lm_engine->clear_context();
+void Gemma3::load_model(std::string model_path, json model_info, int default_context_length, bool enable_preemption, const std::string& backend) {
+    this->_shared_load_backend(model_path, model_info, default_context_length, enable_preemption, backend);
     this->setup_tokenizer(model_path);
     this->sampler.reset();
 
@@ -37,19 +32,86 @@ void Gemma3::load_model(std::string model_path, json model_info, int default_con
     for (size_t i = 0; i < PROFILER_TYPE_NUM; i++) {
         this->profiler_list[i].reset();
     }
+    // The OGA engine has no NPU prefix-slot table. Not calling the export also keeps
+    // the NPU engine DLL unloaded, so a host without the NPU driver can run OGA.
+    const flm_state_api* state = this->backend_id() == flm::backend::kOgaHipepBackendId
+                                     ? nullptr
+                                     : gemma_npu_state_api(lm_engine);
+    _prefix_attach(lm_engine, state, 262144); // 262144 = the image placeholder id (IMAGE_TOKEN_ID in insert)
 }
 
 void Gemma3::setup_tokenizer(std::string model_path) {
     auto tokenizer_config = this->_shared_setup_tokenizer(model_path);
 }
 
-std::string Gemma3::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools) {
+std::string Gemma3::apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools, bool continue_final_message) {
     minja::chat_template_inputs inputs;
-    inputs.add_generation_prompt = true;
     inputs.messages = messages;
     inputs.extra_context = this->extra_context;
-    return this->chat_tmpl->apply(inputs);
+    return this->_render_chat_template(inputs, continue_final_message);
 }
+
+#if defined(FLM_ENABLE_OGA_HIPEP)
+/// \note The package processor decodes and resizes the images and expands each
+///       <start_of_image> of the package template into the image's tokens.
+bool Gemma3::insert_oga_images(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
+    std::vector<std::string> image_bytes;
+    nlohmann::ordered_json messages = nlohmann::ordered_json::array();
+    const auto with_images = [&](const nlohmann::ordered_json& message, std::vector<std::string> bytes) {
+        nlohmann::ordered_json content = nlohmann::ordered_json::array();
+        for (auto& image : bytes) {
+            image_bytes.push_back(std::move(image));
+            content.push_back({{"type", "image"}});
+        }
+        content.push_back({{"type", "text"}, {"text", message.value("content", "")}});
+        return nlohmann::ordered_json{{"role", message.value("role", "user")}, {"content", content}};
+    };
+    if (!input.messages.empty()) {
+        for (const auto& message : input.messages) {
+            if (!message.contains("images") || message["images"].empty()) {
+                messages.push_back(message);
+                continue;
+            }
+            std::vector<std::string> bytes;
+            for (const auto& image : message["images"])
+                bytes.push_back(flm::oga::ImageBytesFromBase64(image.get<std::string>()));
+            messages.push_back(with_images(message, std::move(bytes)));
+        }
+    } else {
+        std::vector<std::string> bytes;
+        for (const auto& path : input.images) bytes.push_back(flm::oga::ImageBytesFromFile(path));
+        messages.push_back(with_images({{"role", "user"}, {"content", input.prompt}}, std::move(bytes)));
+    }
+    header_print("FLM", "Total images: " << image_bytes.size());
+    const std::string templated_text =
+        this->apply_chat_template(messages, nlohmann::ordered_json::object(), meta_info.continue_final_message);
+
+    auto* engine = dynamic_cast<flm::oga::OgaEngine*>(this->lm_engine);
+    if (!engine)
+        throw std::runtime_error("oga-hipep engine is not an OgaEngine");
+    std::vector<int> tokens = engine->StagePromptImages(templated_text, image_bytes);
+    this->profiler_list[TKOEN_ENCODE_TIME].stop(tokens.size());
+    // The processor ran the whole prompt: prefill it from token 0, in one piece.
+    if (!this->token_history.empty())
+        this->clear_context();
+    const int saved_prefill = meta_info.max_prefill_len;
+    meta_info.max_prefill_len = 0;
+    bool success = false;
+    try {
+        success = this->_shared_insert(meta_info, tokens, is_cancelled, nullptr);
+    } catch (...) {
+        meta_info.max_prefill_len = saved_prefill;
+        engine->DropStagedPrompt();
+        throw;
+    }
+    meta_info.max_prefill_len = saved_prefill;
+    // A request that stopped before its prefill must not leave its stage to the next one.
+    engine->DropStagedPrompt();
+    this->_checkpoint_history();
+    this->lm_engine->checkpoint();
+    return success;
+}
+#endif
 
 bool Gemma3::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled) {
     static constexpr int IMAGE_TOKEN_ID = 262144; // replace with actual image token ID
@@ -59,9 +121,18 @@ bool Gemma3::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std:
         header_print("WARNING", "No messages or prompt provided");
         return false;
     }
+#if defined(FLM_ENABLE_OGA_HIPEP)
+    if (this->backend_id() == flm::backend::kOgaHipepBackendId) {
+        bool images = !input.images.empty();
+        for (const auto& message : input.messages) {
+            images = images || (message.contains("images") && !message["images"].empty());
+        }
+        if (images) return this->insert_oga_images(meta_info, input, is_cancelled);
+    }
+#endif
     if (!input.messages.empty()) { // already a formated messages, usually from REST API
-        templated_text = this->apply_chat_template(input.messages);
-        // std::cout << "Templated text after applying chat template: \n" << templated_text << std::endl; // Debug print
+        // Templating happens below, together with image decoding, so that a
+        // failed image never gets an image-token placeholder in the prompt.
     }
     else if (!input.prompt.empty()) { // a pure text, usually from the cli
         nlohmann::ordered_json messages;
@@ -84,27 +155,49 @@ bool Gemma3::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std:
 
     bytes pixel_values;
     if (!input.messages.empty()) {
+        // Decode/preprocess images up front and drop any that fail (e.g. bad
+        // base64) from a filtered copy of the messages before templating, so
+        // a failed image never gets an image-token placeholder; otherwise
+        // pixel blocks (each a fixed 896x896 slot) would fall out of sync
+        // with the placeholders and the prompt would still try to prefill a
+        // nonexistent image.
+        nlohmann::ordered_json filtered_messages = nlohmann::ordered_json::array();
+        std::vector<bytes> valid_pixel_blocks;
         int total_images = 0;
-        for (auto& message : input.messages){
+        for (auto& message : input.messages) {
             nlohmann::ordered_json::array_t images = message.value("images", nlohmann::ordered_json::array());
-            if (images.size() > 0){
-                total_images += images.size();
+            if (images.empty()) {
+                filtered_messages.push_back(message);
+                continue;
             }
+
+            nlohmann::ordered_json filtered_message = message;
+            filtered_message["images"] = nlohmann::ordered_json::array();
+            for (auto& image : images) {
+                std::string image_str = image.get<std::string>();
+                bytes image_rgb = load_image_base64(image_str);
+                if (image_rgb.size() == 0) {
+                    header_print("ERROR", "Skipping invalid base64 image; prefilling language only for this item");
+                    continue;
+                }
+                buffer<bf16> pv = preprocess_image(image_rgb);
+                bytes pv_bytes(pv.size() * sizeof(bf16));
+                memcpy(pv_bytes.data(), pv.data(), pv_bytes.size());
+                valid_pixel_blocks.push_back(std::move(pv_bytes));
+                filtered_message["images"].push_back(image);
+                total_images++;
+            }
+            filtered_messages.push_back(filtered_message);
         }
         header_print("FLM", "Total images: " << total_images);
-        // temporary solution
-        if (total_images > 0){
+        templated_text = this->apply_chat_template(filtered_messages, nlohmann::ordered_json::object(), meta_info.continue_final_message);
+
+        if (total_images > 0) {
             pixel_values.resize(3 * 896 * 896 * sizeof(bf16) * total_images);
             uint8_t* pixel_values_ptr = pixel_values.data();
-            for (auto& message : input.messages){
-                nlohmann::ordered_json::array_t images = message.value("images", nlohmann::ordered_json::array());
-                for (auto& image : images){
-                    std::string image_str = image.get<std::string>();
-                    bytes image_rgb = load_image_base64(image_str);
-                    buffer<bf16> pv = preprocess_image(image_rgb);
-                    memcpy(pixel_values_ptr, pv.data(), pv.size() * sizeof(bf16));
-                    pixel_values_ptr += pv.size() * sizeof(bf16);
-                }
+            for (auto& block : valid_pixel_blocks) {
+                memcpy(pixel_values_ptr, block.data(), block.size());
+                pixel_values_ptr += block.size();
             }
         }
     }
@@ -160,92 +253,75 @@ bool Gemma3::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std:
     
     this->profiler_list[TKOEN_ENCODE_TIME].stop(tokens.size());
 
-    // ----------------------------------------------------------------------
-    // Prompt-cache aware image alignment.
-    //
-    // AutoModel::_shared_insert prefix-matches `tokens` against `token_history`
-    // over the FULL length of `token_history`. If every token matches, it
-    // erases that prefix before prefilling; otherwise it calls clear_context()
-    // and skips nothing. We must NOT erase `tokens` here -- _shared_insert
-    // needs the untrimmed sequence to run that very check. What we DO need to
-    // fix up locally is `pixel_values` (which carries pixels for the WHOLE
-    // prompt, including images from earlier turns that are already cached):
-    // drop the fully-cached leading images so the surviving payload aligns
-    // with the surviving image tokens after _shared_insert performs its own
-    // erase.
-    // ----------------------------------------------------------------------
-    size_t prefix_skip_count = 0;
-    {
-        const size_t idx = this->token_history.size();
-        for (size_t i = 0; i < idx; i++) {
-            if (i < tokens.size() && tokens[i] == this->token_history[i]) {
-                prefix_skip_count++;
-            } else {
-                break;
-            }
-        }
-        // Must match the entirety of token_history, otherwise _shared_insert
-        // will clear the context and not skip anything.
-        if (prefix_skip_count != idx) {
-            prefix_skip_count = 0;
-        }
+    // ---- prefix slots: resume from the longest saved prefix of this prompt ----
+    // The generation prompt ("<start_of_turn>model\n") is how the next turn renders this reply's header: the whole prompt is saved
+    // (trim 0). The template folds the system prompt into the first user turn, so the shared head before "<start_of_turn>user" is a
+    // BOS token only: no boundary slot, the end slots carry the reuse. After a resume token_history is the slot's tokens, so the
+    // plan's skip below is the match length.
+    const bool slot_mode = this->_prefix_slot_mode(meta_info, tokens.size(), 0);
+    size_t match_len = 0;
+    std::vector<int> full_tokens;          // what this prompt leaves in the engine
+    std::vector<uint64_t> image_hashes;    // content of each of its images (a fixed 3*896*896 bf16 block each)
+    // computed over the untrimmed pixels, for the slot cache and for the prompt-reuse check below
+    const size_t block_bytes = static_cast<size_t>(3) * 896 * 896 * sizeof(bf16);
+    for (size_t off = 0; off + block_bytes <= pixel_values.size(); off += block_bytes) {
+        image_hashes.push_back(prefix_hash_bytes(pixel_values.data() + off, block_bytes, 0xcbf29ce484222325ull));
+    }
+    if (slot_mode) {
+        full_tokens = tokens;
+        match_len = this->_prefix_resume(this->prefix_cache_, full_tokens, image_hashes);
+    } else {
+        this->_prefix_legacy_path(); // the in-place path below moves the engine on without telling the cache
     }
 
-    // Total images currently held in pixel_values (each image occupies a
-    // fixed 3*896*896 bf16 elements block).
+    // ---- prompt cache: drop the images the engine already holds ----
+    // pixel_values carries every image of the prompt, earlier turns' included. Each image is a fixed 896x896 block and
+    // expands to the same number of placeholders (the chat template does the expansion), so the per-image count is the
+    // placeholder total over the blocks; the last image takes any remainder so the items cover every placeholder.
     const size_t per_img_bytes = static_cast<size_t>(3) * 896 * 896 * sizeof(bf16);
-    const size_t total_images_in_payload =
-        per_img_bytes > 0 ? pixel_values.size() / per_img_bytes : 0;
-
-    if (prefix_skip_count > 0 && total_images_in_payload > 0) {
-        int skipped_image_tokens = 0;
-        for (size_t i = 0; i < prefix_skip_count; i++) {
-            if (tokens[i] == IMAGE_TOKEN_ID) skipped_image_tokens++;
+    const size_t total_images_in_payload = pixel_values.size() / per_img_bytes;
+    std::vector<prompt_media_t> media;
+    if (total_images_in_payload > 0) {
+        const size_t total_image_tokens = static_cast<size_t>(std::count(tokens.begin(), tokens.end(), IMAGE_TOKEN_ID));
+        std::vector<size_t> counts(total_images_in_payload, total_image_tokens / total_images_in_payload);
+        counts.back() += total_image_tokens % total_images_in_payload;
+        prompt_media_from_counts(tokens, IMAGE_TOKEN_ID, counts, prompt_media_t::kImage, media);
+        // so a different picture under the same placeholders is not taken for the one the engine holds (0 = not hashed)
+        for (size_t i = 0; i < media.size() && i < image_hashes.size(); i++) {
+            media[i].hash = image_hashes[i] != 0 ? image_hashes[i] : 1;
         }
-        int total_image_tokens = 0;
-        for (int t : tokens) {
-            if (t == IMAGE_TOKEN_ID) total_image_tokens++;
-        }
-        if (skipped_image_tokens > 0 && total_image_tokens > 0) {
-            const int per_img_tokens =
-                total_image_tokens / static_cast<int>(total_images_in_payload);
-            if (per_img_tokens > 0) {
-                const size_t skipped_imgs =
-                    static_cast<size_t>(skipped_image_tokens / per_img_tokens);
-                const size_t drop_bytes =
-                    std::min(skipped_imgs * per_img_bytes, pixel_values.size());
-                if (drop_bytes > 0) {
-                    const size_t remaining = pixel_values.size() - drop_bytes;
-                    if (remaining == 0) {
-                        pixel_values = bytes();
-                    } else {
-                        bytes trimmed(remaining);
-                        memcpy(trimmed.data(),
-                               pixel_values.data() + drop_bytes,
-                               remaining);
-                        pixel_values = std::move(trimmed);
-                    }
-                    header_print("FLM",
-                        "Prompt-cache hit: dropped " << skipped_imgs
-                        << " cached image(s) from payload");
-                }
-            }
+    }
+    // after the slot resume: it sees the token_history _shared_insert will see
+    const prompt_reuse_t plan = this->_plan_reuse(tokens, media);
+    const size_t drop_bytes = std::min(plan.skipped_media[prompt_media_t::kImage] * per_img_bytes, pixel_values.size());
+    if (drop_bytes > 0) {
+        const size_t remaining = pixel_values.size() - drop_bytes;
+        if (remaining == 0) {
+            pixel_values = bytes();
+        } else {
+            bytes trimmed(remaining);
+            memcpy(trimmed.data(), pixel_values.data() + drop_bytes, remaining);
+            pixel_values = std::move(trimmed);
         }
     }
 
     // hardware
     void* payload = pixel_values.size() > 0 ? static_cast<void*>(&pixel_values) : nullptr;
 
-    // find the last image token index, expressed relative to the tokens that
-    // will SURVIVE _shared_insert's prefix erase (i.e. shifted by -prefix_skip_count).
+    // the image rows have to sit in the first prefill chunk: one past the last placeholder that is prefilled,
+    // relative to the tokens that survive _shared_insert's skip
     int last_image_token_index = -1;
-    for (int i = static_cast<int>(prefix_skip_count); i < (int)tokens.size(); i++) {
+    for (int i = static_cast<int>(plan.skip); i < (int)tokens.size(); i++) {
         if (tokens[i] == IMAGE_TOKEN_ID) {
-            last_image_token_index = i - static_cast<int>(prefix_skip_count);
+            last_image_token_index = i - static_cast<int>(plan.skip);
         }
     }
-    last_image_token_index++; // plus the end of image tokens
+    last_image_token_index++;
 
+    if (slot_mode) {
+        return this->_prefix_insert(this->prefix_cache_, meta_info, tokens, full_tokens, image_hashes, match_len, "<start_of_turn>user",
+                                    payload, last_image_token_index, is_cancelled);
+    }
     return this->_shared_insert(meta_info, tokens, is_cancelled, payload, last_image_token_index);
 }
 

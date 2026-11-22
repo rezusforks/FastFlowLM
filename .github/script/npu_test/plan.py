@@ -1,0 +1,389 @@
+"""The model catalog, and which models each suite runs at each tier.
+
+Tiers:
+  install  a handful of requests, to show an installed .deb or MSI works
+  pr       one model per engine family, plus every model of a family the
+           change touches (--families)
+  full     every model in the catalog (nightly)
+
+The chat suite covers language models family by family, so there is no
+separate sweep of every model on a pull request: one model per engine family
+exercises the engine, and the families a change touches run in full.
+
+A GPU backend run (--backend) tests that backend's models instead: one per
+family on the install and pr tiers (PR_GPU; some families only when the
+change touches them), and every one on the full tier.
+
+Every tier also tests the models the change requires (--required-models):
+for the NPU, the entries it adds or whose weights it republishes; for a GPU
+backend, the entries it adds or edits.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from dataclasses import dataclass, field
+
+TIERS = ("install", "pr", "full")
+
+# One model per engine family for the pr tier, the smallest that still covers
+# the engine. None leaves a family out of the pr tier unless the change
+# touches it: those are the large models whose load alone costs minutes, on
+# engines no other model shares. A family missing from this table (one added
+# to the catalog later) gets its smallest model, so it is never silently
+# untested.
+PR_CHAT = {
+    "hunyuan": "hy-mt2-flash:1.8b",
+    "hy-memory": None,        # 30B; runs when the change touches it
+    "nanbeige": "nanbeige4.1:3b",
+    "qwen3vl": "qwen3vl-it:4b",
+    "qwen3vl-flash": "qwen3vl-flash:4b",
+    "gemma4e": "gemma4-it:e2b",
+    "gemma4-12b": "gemma4-it:12b",
+    "gemma4e-flash": "gemma4e-flash:e2b",
+    "gemma4e-dflash-flash": None,   # same 9 GB nemotron3.5-bolt:e4b package; runs when the change touches it
+    "gemma4e-dflash": None,   # needs the 9 GB nemotron3.5-bolt:e4b package; runs when the change touches it
+    "qwen3.5": "qwen3.5:0.8b",
+    "minicpm-v-4.7": "minicpm-v-4.7:1b",
+    "minicpm-ocr": "minicpm-ocr:1.0",
+    # Large, but on their own engines and among the most used: their six chat
+    # cases took 80-110 s per package in the nightly run of 2026-11-18, and
+    # the runners keep the weights, so they are tested on every change.
+    "qwen3.6-moe": "qwen3.6-moe:35b-a3b",
+    "qwen3.8-mtp": "qwen3.8-mtp:27b",
+    # The qwen3.8-mtp engine with a draft package (Qwen3_8DFlash2 derives from
+    # Qwen3_8MTP), which qwen3.8-mtp:27b already covers; up to 3 min on Windows.
+    "qwen3.8-dflash2": None,
+    "minicpm-v-4.7-moe": None,  # 22 GB, the only model of its engine; runs when the change touches it
+    "lfm2": "lfm2:1.2b",
+    "lfm3": "lfm3:1.7b",
+    "lfm2.5-tk": "lfm2.5-tk:1.2b",
+    "phi4": "phi4-mini-it:4b",
+    "gemma3-text": "gemma3:1b",
+    "gemma3": "gemma3:4b",
+    "llama3": "llama3.2:1b",
+    "deepseek-r1": None,      # the llama3 engine, already covered
+    "deepseek-r1-0528": None, # the qwen3 engine, already covered
+    "qwen3": "qwen3:0.6b",
+    "qwen3-tk": None,         # the qwen3 engine, already covered
+    "qwen3-it": None,         # the qwen3 engine, already covered
+    "gpt-oss": None,          # 20 GB
+    "qwen2": "qwen2.5-it:3b",
+    "qwen2vl": "qwen2.5vl-it:3b",
+}
+
+# Families that are not chat models; each has its own suite (r2t2: asr_chat).
+NON_CHAT_FAMILIES = {"embed-gemma", "d3", "whisper-v3", "r2t2"}
+
+# Backends that run their models on the GPU rather than the NPU. Only a run
+# that asks for one (--backend) tests its models.
+GPU_BACKENDS = {"oga-hipep"}
+
+# One model per family for a GPU backend run on the install and pr tiers. A
+# family's models share its frontend and the backend, and the catalog gives
+# them the same features (vision, reasoning, tool calling), so the rest add
+# only other weights, which the full tier tests. A family missing from this
+# table (one added to the catalog later) gets its smallest model, so it is
+# never silently untested.
+PR_GPU = {
+    "qwen3.5": "qwen3.8-oga-hipep:27b",   # the newest Qwen; Qwen3.5 and 3.6 too
+    "gemma4e": "gemma4-it-oga-hipep:26b-a4b",
+    "qwen2": "qwen2.5-it-oga-hipep:14b",
+    "gemma3": "gemma3-oga-hipep:4b",
+    "gemma4-12b": "gemma4-it-oga-hipep:12b",
+    "gpt-oss": "gpt-oss-oga-hipep:120b",
+    "laguna": "laguna2.1-oga-hipep:33b-a3b",
+    "nemotron-h": "nemotron3.5-lightning-oga-hipep:30b-a3b",
+}
+
+# Families whose PR_GPU model the install and pr tiers test only when the
+# change touches the family (--families), so that every pull request tests
+# just the newest Qwen and Gemma: Qwen2.5 and Gemma 3, the generations before;
+# gemma4-12b, a second Gemma 4 family; gpt-oss, whose one model is 69 GB; and
+# laguna and nemotron-h, on the TemplateChat frontend that only they use.
+PR_GPU_WHEN_TOUCHED = {"qwen2", "gemma3", "gemma4-12b", "gpt-oss",
+                       "laguna", "nemotron-h"}
+
+# Suites with a fixed NPU model list that a GPU backend run gives its own chat
+# models instead: the OpenAI contract (tools, streaming, errors, usage) holds
+# for every backend the server drives, and flm must still end once it has
+# loaded the backend's runtime (shutdown).
+BACKEND_SUITES = {"api", "shutdown"}
+
+# Models that reason even when asked not to. Their answer comes after the
+# reasoning, so they need a larger token budget before any content appears.
+ALWAYS_THINKS_FAMILIES = {"qwen3-tk", "lfm2.5-tk", "deepseek-r1", "deepseek-r1-0528",
+                          "nanbeige", "gpt-oss"}
+
+# Per-suite model lists for the tiers that do not derive from PR_CHAT.
+SUITE_MODELS = {
+    "api": {
+        "install": [],
+        "pr": ["qwen3:0.6b", "gemma4-it:e2b"],
+        "full": ["qwen3:0.6b", "qwen3:4b", "qwen3-it:4b", "gemma4-it:e2b", "qwen3.5:2b",
+                 "llama3.2:3b", "gpt-oss:20b", "lfm2.5-tk:1.2b"],
+    },
+    "prefix_cache": {
+        "install": [],
+        "pr": ["qwen3:0.6b", "gemma4-it:e2b"],
+        "full": ["qwen3:0.6b", "gemma4-it:e2b", "qwen3.5:0.8b", "llama3.2:1b",
+                 "lfm2:1.2b", "phi4-mini-it:4b", "gemma3:1b"],
+    },
+    "serving": {
+        "install": [],
+        "pr": ["qwen3:0.6b", "llama3.2:1b"],
+        "full": ["qwen3:0.6b", "llama3.2:1b"],
+    },
+    # A GPU backend run only: a process that had loaded hip-ep could not end.
+    "shutdown": {"install": [], "pr": [], "full": []},
+    # Chat models fed audio through /v1/chat/completions. Whisper itself is
+    # always tested; these are the chat models with an audio encoder.
+    "asr_chat": {
+        "install": [],
+        # 12b has its own audio front end, separate from the e2b/e4b one.
+        "pr": ["gemma4-it:e2b", "gemma4-it:e4b", "nemotron3.5-bolt:e4b", "gemma4-it:12b"],
+        "full": None,  # every catalog model with asr=true, Whisper aside
+    },
+    "embedding": {
+        "install": ["embed-gemma:300m"],
+        "pr": ["embed-gemma:300m"],
+        "full": None,  # every embed-gemma model
+    },
+    "decision": {
+        "install": ["d3:lite"],
+        "pr": ["d3:lite"],
+        "full": None,  # every d3 model
+    },
+    "whisper": {
+        "install": ["whisper-v3:turbo"],
+        "pr": ["whisper-v3:turbo"],
+        "full": None,  # every whisper-v3 model
+    },
+}
+
+INSTALL_CHAT = ["qwen3:0.6b"]
+
+
+@dataclass
+class Model:
+    id: str
+    family: str = ""
+    vlm: bool = False
+    asr: bool = False
+    think: bool = False
+    labels: list = field(default_factory=list)
+    size: float = 0.0
+    backend: str = "flm"
+    # Whether this machine has the model's files, as `flm list --json` says
+    # (False also for an outdated or incompatible copy); None when it does not say.
+    installed: bool | None = None
+    # The model whose package this one loads on top of (a DFlash draft's
+    # target); `flm pull` downloads it first.
+    base: str = ""
+
+    @property
+    def single_turn(self) -> bool:
+        return "single-turn" in self.labels
+
+    @property
+    def always_thinks(self) -> bool:
+        return self.family in ALWAYS_THINKS_FAMILIES
+
+    @property
+    def translation(self) -> bool:
+        # Not lfm2-trans: that is LFM2-2.6B-Transcript, a meeting summarizer.
+        return "translation" in self.labels or self.id.startswith("translategemma")
+
+
+def load_catalog(flm_bin: str,
+                 model_extensions: list[str] | None = None) -> dict[str, Model]:
+    """The catalog as `flm list --json --filter all` reports it on this machine.
+
+    That is the only listing that carries the vlm/asr flags and families, and it
+    already leaves out models this NPU cannot run.
+    """
+    command = [flm_bin, "list", "--json", "--filter", "all"]
+    for manifest in model_extensions or []:
+        command += ["--model-extension", manifest]
+    proc = subprocess.run(command,
+                          capture_output=True, text=True, timeout=300, check=True)
+    start = proc.stdout.find("{")  # tolerate banner lines before the JSON
+    if start < 0:
+        raise RuntimeError("no JSON in `flm list --json` output")
+    models = {}
+    for entry in json.loads(proc.stdout[start:]).get("models", []):
+        model_id = entry.get("model") or entry.get("name")
+        if not model_id:
+            continue
+        details = entry.get("details") or {}
+        models[model_id] = Model(
+            id=model_id,
+            family=details.get("family", ""),
+            vlm=bool(entry.get("vlm")),
+            asr=bool(entry.get("asr")),
+            think=bool(details.get("think")),
+            labels=list(entry.get("label") or []),
+            size=float(entry.get("size") or 0),
+            backend=entry.get("backend") or "flm",
+            installed=entry["installed"] if isinstance(entry.get("installed"), bool) else None,
+            base=entry.get("base_model") or "",
+        )
+    return models
+
+
+class Plan:
+    def __init__(self, catalog: dict[str, Model], tier: str, families: list[str],
+                 only_models: list[str] | None = None, backend: str = "",
+                 required: list[str] | None = None):
+        if tier not in TIERS:
+            raise ValueError(f"unknown tier {tier!r}")
+        if backend and backend not in GPU_BACKENDS:
+            raise ValueError(f"unknown GPU backend {backend!r}")
+        self.catalog = catalog
+        self.tier = tier
+        self.families = set(families)
+        self.only_models = only_models
+        self.backend = backend  # empty: the NPU backends
+        # Models the change adds (changes.py new_models), or for a GPU backend
+        # run the entries it adds or edits (hipep_models): tested on every
+        # tier, even past --models, and downloaded whatever their size.
+        self.required = list(required or [])
+        # Models no suite tests: ones the run could not pull (Context.pull), or
+        # larger than the runner holds (--max-model-gb).
+        self.unavailable: set[str] = set()
+
+    def _serves(self, model_id: str) -> bool:
+        """Whether the backend under test runs this model, and it is not unavailable."""
+        if model_id in self.unavailable:
+            return False
+        return self.backend_serves(model_id)
+
+    def backend_serves(self, model_id: str) -> bool:
+        """Whether the backend under test runs this catalog model."""
+        backend = self.catalog[model_id].backend
+        return backend == self.backend if self.backend else backend not in GPU_BACKENDS
+
+    def _known(self, ids) -> list[str]:
+        """Keeps catalog models, in order, dropping ones this machine lacks."""
+        out = []
+        for model_id in ids:
+            if model_id in self.catalog and model_id not in out and self._serves(model_id):
+                if (not self.only_models or model_id in self.only_models
+                        or model_id in self.required):
+                    out.append(model_id)
+        return out
+
+    def _family(self, family: str) -> list[str]:
+        return [m.id for m in self.catalog.values() if m.family == family]
+
+    def _added(self, predicate) -> list[str]:
+        """The models the change adds that predicate accepts."""
+        return [m for m in self.required if m in self.catalog and predicate(self.catalog[m])]
+
+    def _touched(self, predicate) -> list[str]:
+        """Models of the families the change touches, and the models it adds."""
+        return [m.id for m in self.catalog.values()
+                if (m.family in self.families or m.id in self.required) and predicate(m)]
+
+    def chat(self) -> list[str]:
+        # --models names exactly what to test, whatever the tier would pick.
+        if self.only_models:
+            return [m for m in dict.fromkeys(self.only_models + self.required)
+                    if m in self.catalog and self._serves(m)
+                    and self.catalog[m].family not in NON_CHAT_FAMILIES]
+        if self.backend:
+            models = [m for m in self.catalog.values()
+                      if m.backend == self.backend and m.family not in NON_CHAT_FAMILIES]
+            if self.tier == "full":
+                return self._known(m.id for m in models)
+            picked = []
+            for family in sorted({m.family for m in models}):
+                if family in PR_GPU_WHEN_TOUCHED and family not in self.families:
+                    continue
+                smallest = min((m for m in models if m.family == family),
+                               key=lambda m: (m.size, m.id))
+                picked.append(PR_GPU.get(family, smallest.id))
+            return self._known(picked + self.required)
+        if self.tier == "install":
+            return self._known(INSTALL_CHAT + self._added(lambda m: m.family not in NON_CHAT_FAMILIES))
+        chat_models = [m for m in self.catalog.values() if m.family not in NON_CHAT_FAMILIES]
+        if self.tier == "full":
+            return self._known(m.id for m in chat_models)
+        picked = []
+        for family in sorted({m.family for m in chat_models}):
+            if family in PR_CHAT:
+                if PR_CHAT[family]:
+                    picked.append(PR_CHAT[family])
+            else:
+                members = sorted((m for m in chat_models if m.family == family),
+                                 key=lambda m: (m.size, m.id))
+                picked.append(members[0].id)
+        picked += self._touched(lambda m: m.family not in NON_CHAT_FAMILIES)
+        return self._known(picked)
+
+    def suite(self, name: str) -> list[str]:
+        """Models for a suite with a fixed list in SUITE_MODELS."""
+        if self.backend and name in BACKEND_SUITES:
+            return self.chat()
+        table = SUITE_MODELS[name]
+        listed = table[self.tier]
+        if listed is None:  # full tier: derive from the catalog
+            listed = {
+                "asr_chat": [m.id for m in self.catalog.values()
+                             if m.asr and m.family != "whisper-v3"],
+                "embedding": self._family("embed-gemma"),
+                "decision": self._family("d3"),
+                "whisper": self._family("whisper-v3"),
+            }[name]
+        extra = []
+        if self.tier == "install":
+            extra = {
+                "asr_chat": self._added(lambda m: m.asr and m.family != "whisper-v3"),
+                "decision": self._added(lambda m: m.family == "d3"),
+                "embedding": self._added(lambda m: m.family == "embed-gemma"),
+                "whisper": self._added(lambda m: m.family == "whisper-v3"),
+            }.get(name, [])
+        elif self.tier == "pr":
+            extra = {
+                "asr_chat": self._touched(lambda m: m.asr and m.family != "whisper-v3"),
+                "decision": self._touched(lambda m: m.family == "d3"),
+                "embedding": self._touched(lambda m: m.family == "embed-gemma"),
+                "whisper": self._touched(lambda m: m.family == "whisper-v3"),
+            }.get(name, [])
+        return self._known(list(listed) + extra)
+
+    def planned(self, suites) -> list[str]:
+        """Every model the named suites will load, in order, without repeats."""
+        ids: list[str] = []
+        for name in suites:
+            if name == "chat":
+                ids += self.chat()
+            elif name == "asr":
+                ids += self.suite("whisper") + self.suite("asr_chat")
+            elif name in SUITE_MODELS:
+                ids += self.suite(name)
+        return list(dict.fromkeys(ids))
+
+    def missing(self, suites, everything: bool = False) -> list[str]:
+        """The planned models this machine lacks (every planned one if
+        everything), cheapest download first.
+
+        Cheapest first, so a download budget that runs out leaves the fewest
+        models untested. A model's download includes its base when that is
+        missing too: a 270 MB DFlash draft can bring a 9 GB target with it.
+        """
+        planned = self.planned(suites)
+        lacking = [m for m in planned
+                   if everything or self.catalog[m].installed is not True]
+
+        def cost(model_id: str) -> float:
+            model = self.catalog[model_id]
+            base = self.catalog.get(model.base)
+            extra = base.size if base is not None and base.installed is not True else 0.0
+            return model.size + extra
+
+        return sorted(lacking, key=lambda m: (cost(m), planned.index(m)))
+
+    def model(self, model_id: str) -> Model:
+        return self.catalog.get(model_id) or Model(id=model_id)

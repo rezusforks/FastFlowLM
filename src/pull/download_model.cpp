@@ -5,14 +5,22 @@
 /// \version 0.9.24
 /// \note This class for curl download
 #include "download_model.hpp"
+#include "download_tls.hpp"
+#include <curl/curl.h>
 #include <fstream>
 #include <iostream>
 #include <filesystem>
 #include <iomanip>
+#include <thread>
+#include <chrono>
+#include <mutex>
 #include "utils/utils.hpp"
 #include "nlohmann/json.hpp"
 #include "picosha2.h" 
 #include "sha1.hpp"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace download_utils {
 
@@ -120,6 +128,235 @@ int progress_callback(void* clientp, double dltotal, double dlnow, double ultota
     return 0;
 }
 
+namespace {
+
+FILE* open_part_file(const std::filesystem::path& path, bool append) {
+#ifdef _WIN32
+    return _wfopen(path.c_str(), append ? L"ab" : L"wb");
+#else
+    return fopen(path.c_str(), append ? "ab" : "wb");
+#endif
+}
+
+bool promote_atomically(const std::filesystem::path& part,
+                        const std::filesystem::path& destination) {
+#ifdef _WIN32
+    return MoveFileExW(part.c_str(), destination.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    std::error_code error;
+    std::filesystem::rename(part, destination, error);
+    return !error;
+#endif
+}
+
+bool request_hash_matches(const DownloadRequest& request,
+                          const std::filesystem::path& path) {
+    const std::string actual = request.hash_algorithm == HashAlgorithm::Sha256
+        ? calculate_file_sha256(path.string())
+        : calculate_git_blob_oid(path.string());
+    return actual == request.expected_hash;
+}
+
+std::string trimmed(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+std::string read_token_file(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) return {};
+    return trimmed({std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()});
+}
+
+/// \brief set the TLS options of a transfer (download_tls.hpp: verified unless FLM_INSECURE_DOWNLOAD=1)
+void apply_tls(CURL* curl, const TlsSettings& tls) {
+    if (!tls.verify_peer) {
+        static std::once_flag warned;
+        std::call_once(warned, [] {
+            header_print("WARNING", "FLM_INSECURE_DOWNLOAD is set: downloads do not verify TLS certificates");
+        });
+    }
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, tls.verify_peer);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, tls.verify_host);
+    long options = 0;
+    if (tls.native_ca) options |= CURLSSLOPT_NATIVE_CA;
+    if (tls.revoke_best_effort) options |= CURLSSLOPT_REVOKE_BEST_EFFORT;
+    if (options) curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, options);
+}
+
+/// \brief after a failed transfer: the curl error, and for a refused certificate what to do
+void report_curl_error(CURLcode result) {
+    std::cerr << "CURL error: " << curl_easy_strerror(result) << std::endl;
+    if (!is_tls_error(static_cast<int>(result))) return;
+    static std::once_flag hinted;   // once per process, not once per retry
+    std::call_once(hinted, [] { std::cerr << tls_failure_hint() << std::endl; });
+}
+
+/// \brief authorize a request to Hugging Face with the user's token, if any
+/// \return the header list the caller frees once the transfer is done, or nullptr
+/// \note Only https://huggingface.co/ gets the token, and with TLS verification
+///       on even under FLM_INSECURE_DOWNLOAD: the token never travels over an
+///       unverified connection. libcurl drops a custom Authorization header when a
+///       redirect leaves the host, so the signed storage URL a file download is
+///       sent on to never sees it. Callers ask for it only for sources that need
+///       it: the Hub answers 401 to an expired token even on a public repo.
+curl_slist* apply_huggingface_auth(CURL* curl, const std::string& url) {
+    if (url.rfind("https://huggingface.co/", 0) != 0) return nullptr;
+    const std::string token = huggingface_token();
+    if (token.empty()) return nullptr;
+    curl_slist* headers = curl_slist_append(nullptr, ("Authorization: Bearer " + token).c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    apply_tls(curl, verified_tls_settings());
+    return headers;
+}
+
+}  // namespace
+
+std::string huggingface_token() {
+    for (const char* name : {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"}) {
+        if (const char* value = std::getenv(name)) {
+            if (auto token = trimmed(value); !token.empty()) return token;
+        }
+    }
+    if (const char* path = std::getenv("HF_TOKEN_PATH")) {
+        return read_token_file(path);
+    }
+    if (const char* home = std::getenv("HF_HOME")) {
+        return read_token_file(std::filesystem::path(home) / "token");
+    }
+#ifdef _WIN32
+    const char* user_home = std::getenv("USERPROFILE");
+#else
+    const char* user_home = std::getenv("HOME");
+#endif
+    if (!user_home) return {};
+    return read_token_file(std::filesystem::path(user_home) / ".cache" / "huggingface" / "token");
+}
+
+bool url_accessible(const std::string& url, bool use_hf_token) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return false;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    apply_tls(curl, tls_settings());
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "FastFlowLM/1.0");
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_slist* headers = use_hf_token ? apply_huggingface_auth(curl, url) : nullptr;
+
+    long status = 0;
+    const CURLcode result = curl_easy_perform(curl);
+    if (result == CURLE_OK) {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    } else if (is_tls_error(static_cast<int>(result))) {
+        static std::once_flag hinted;
+        std::call_once(hinted, [&] {
+            std::cerr << url << ": " << curl_easy_strerror(result) << std::endl << tls_failure_hint() << std::endl;
+        });
+    }
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    // A transfer that is not HTTP, such as file://, has no response code.
+    return result == CURLE_OK && (status == 0 || (status >= 200 && status < 400));
+}
+
+bool download_file_atomic(const DownloadRequest& request,
+                          std::function<void(double)> progress_cb) {
+    if (request.expected_hash.empty()) {
+        std::cerr << "Missing expected hash for: " << request.destination << std::endl;
+        return false;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(request.destination.parent_path(), error);
+    if (error) {
+        std::cerr << "Failed to create download directory: " << error.message() << std::endl;
+        return false;
+    }
+
+    const std::filesystem::path part(request.destination.string() + ".part");
+    std::uint64_t offset = 0;
+    if (std::filesystem::exists(part, error)) {
+        offset = std::filesystem::file_size(part, error);
+        if (error) {
+            return false;
+        }
+        if (offset > request.expected_size) {
+            std::filesystem::remove(part, error);
+            if (error) {
+                return false;
+            }
+            offset = 0;
+        }
+    }
+
+    if (offset < request.expected_size) {
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            std::cerr << "Failed to initialize CURL" << std::endl;
+            return false;
+        }
+        FILE* fp = open_part_file(part, offset != 0);
+        if (!fp) {
+            curl_easy_cleanup(curl);
+            std::cerr << "Failed to open partial file for writing: " << part << std::endl;
+            return false;
+        }
+
+        g_progress_bar_shown = false;
+        hide_cursor();
+        curl_easy_setopt(curl, CURLOPT_URL, request.url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data_to_file);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        apply_tls(curl, tls_settings());
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "FastFlowLM/1.0");
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3600L);
+        curl_slist* headers = request.use_hf_token
+            ? apply_huggingface_auth(curl, request.url) : nullptr;
+        if (offset != 0) {
+            curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE,
+                             static_cast<curl_off_t>(offset));
+        }
+        if (progress_cb) {
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+            curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, progress_callback);
+        }
+
+        const CURLcode result = curl_easy_perform(curl);
+        fclose(fp);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        show_cursor();
+        if (g_progress_bar_shown) {
+            std::cout << std::endl;
+        }
+        if (result != CURLE_OK) {
+            report_curl_error(result);
+            return false;  // Keep the partial file for the next resume attempt.
+        }
+    }
+
+    const std::uint64_t completed_size = std::filesystem::file_size(part, error);
+    if (error || completed_size != request.expected_size ||
+        !request_hash_matches(request, part)) {
+        std::filesystem::remove(part, error);
+        header_print("FLM", "Downloaded file size or hash did not match.");
+        return false;
+    }
+
+    if (!promote_atomically(part, request.destination)) {
+        std::cerr << "Failed to atomically promote: " << request.destination << std::endl;
+        return false;
+    }
+    header_print("FLM", "Download completed: " << request.destination.string());
+    return true;
+}
+
 /// \brief Download a file from URL to a local file
 /// \param url the URL to download from
 /// \param local_path the local path to save the file
@@ -154,8 +391,7 @@ bool download_file(const std::string& url, const std::string& local_path, bool i
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data_to_file);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    apply_tls(curl, tls_settings());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "FastFlowLM/1.0");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3600L); // 1 hour timeout
 
@@ -174,7 +410,7 @@ bool download_file(const std::string& url, const std::string& local_path, bool i
     show_cursor();
 
     if (res != CURLE_OK) {
-        std::cerr << "CURL error: " << curl_easy_strerror(res) << std::endl;
+        report_curl_error(res);
         std::filesystem::remove(local_path); // Remove partial download
         return false;
     }
@@ -184,13 +420,16 @@ bool download_file(const std::string& url, const std::string& local_path, bool i
         std::cout << std::endl;
     }
 
-    header_print("FLM", "Checking Hash...");
-    std::string local_oid = is_lfs ? calculate_file_sha256(local_path) : calculate_git_blob_oid(local_path);
-    if (local_oid != remote_oid) {
-        header_print("FLM", "Hash not matched!");
-        show_cursor(); // Show cursor on error
-        return false;
+    if (1) {
+        header_print("FLM", "Checking Hash...");
+        std::string local_oid = is_lfs ? calculate_file_sha256(local_path) : calculate_git_blob_oid(local_path);
+        if (local_oid != remote_oid) {
+            header_print("FLM", "Hash not matched!");
+            show_cursor(); // Show cursor on error
+            return false;
+        }
     }
+
 
     header_print("FLM", "Download completed: " << local_path);
     return true;
@@ -213,6 +452,22 @@ static bool download_with_retry(const std::string& url, const std::string& local
     return false;
 }
 
+static bool download_with_retry(const DownloadRequest& request,
+                                std::function<void(double)> progress_cb,
+                                int max_retries = 3) {
+    for (int attempt = 0; attempt < max_retries; ++attempt) {
+        if (download_file_atomic(request, progress_cb)) {
+            return true;
+        }
+        header_print("FLM", "Download failed (attempt " << (attempt + 1) << "/" << max_retries << ")");
+        if (attempt + 1 < max_retries) {
+            header_print("FLM", "Retrying...");
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+    return false;
+}
+
 /// \brief Download content from URL to a string
 /// \param url the URL to download from
 /// \return the downloaded string
@@ -229,8 +484,7 @@ std::string download_string(const std::string& url) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data_to_string);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    apply_tls(curl, tls_settings());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "FastFlowLM/1.0");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L); // 1 minute timeout
 
@@ -238,7 +492,7 @@ std::string download_string(const std::string& url) {
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
-        std::cerr << "CURL error: " << curl_easy_strerror(res) << std::endl;
+        report_curl_error(res);
         return "";
     }
 
@@ -263,6 +517,15 @@ bool download_multiple_files(const nlohmann::json downloads,
         std::string filename = std::filesystem::path(url).filename().string();
         std::string remote_oid = file["oid"];
         bool is_lfs = file["is_lfs"];
+        DownloadRequest request{
+            url,
+            local_path,
+            file["expected_size"].get<std::uint64_t>(),
+            file.value("hash_algorithm", std::string()) == "sha256"
+                ? HashAlgorithm::Sha256
+                : HashAlgorithm::GitBlobSha1,
+            remote_oid,
+            file.value("use_hf_token", false)};
 
         // cut "?download=true"
         if (filename.find("?download=true") != std::string::npos) {
@@ -277,7 +540,7 @@ bool download_multiple_files(const nlohmann::json downloads,
             }
         };
 
-        if (!download_with_retry(url, local_path, is_lfs, remote_oid, file_progress)) {
+        if (!download_with_retry(request, file_progress)) {
             std::cerr << "Failed to download: " << url << std::endl;
             //show_cursor(); // Show cursor on error
             return false;
